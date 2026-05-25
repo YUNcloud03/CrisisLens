@@ -1,0 +1,43 @@
+# ── 訓練圖片資料集（檔案量大，用 Google Drive / 雲端共享）──
+data/
+
+# ── 資料庫（本地資料，不上傳）────────────────────────
+crisislens.db
+crisislens.db-shm
+crisislens.db-wal
+
+# ── 上傳的圖片（本地資料）────────────────────────────
+uploads/
+
+# ── API 金鑰 ──────────────────────────────────────────
+.env
+
+# ── FAISS index（可由 rag/build_index.py 重建）────────
+rag/faiss_index/
+
+# ── Python 暫存 ───────────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# ── 模型權重（檔案太大）──────────────────────────────
+models/*.pth
+models/*.pt
+models/*.bin
+models/*_classes.json
+
+# ── 虛擬環境 ──────────────────────────────────────────
+venv/
+.venv/
+env/
+
+# ── IDE ───────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+
+# ── OS ────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
