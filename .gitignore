@@ -1,8 +1,7 @@
 # ── 訓練圖片資料集（檔案量大，用 Google Drive / 雲端共享）──
 data/
 
-# ── 資料庫（本地資料，不上傳）────────────────────────
-crisislens.db
+# ── 資料庫 WAL 暫存檔（不上傳，每次關閉後自動合併回 .db）──
 crisislens.db-shm
 crisislens.db-wal
 
