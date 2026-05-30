@@ -321,35 +321,35 @@ if analyze_btn:
     uploaded_file.seek(0)
     img = load_image(uploaded_file)
 
-    clip_result   = None
-    resnet_result = None
+    clip_result = None
+    cnn_result  = None
 
     with st.spinner("模型推論中..."):
         if "CLIP" in model_mode or "比較" in model_mode:
             from models.clip_classifier import classify as clip_classify
             clip_result = clip_classify(img, prompt_set_key)
 
-        if "ResNet50" in model_mode or "比較" in model_mode:
-            from models.resnet_baseline import classify as resnet_classify
-            resnet_result = resnet_classify(img)
+        if "自訓 CNN" in model_mode or "比較" in model_mode:
+            from models.custom_cnn_classifier import classify as cnn_classify
+            cnn_result = cnn_classify(img)
 
-    primary = clip_result or resnet_result
+    primary = clip_result or cnn_result
 
     # ── 模型結果 ───────────────────────────────────────────
     st.markdown("## 📊 分類結果")
 
-    if "比較" in model_mode and clip_result and resnet_result:
+    if "比較" in model_mode and clip_result and cnn_result:
         mc1, mc2 = st.columns(2)
         with mc1:
             render_model_card("CLIP Zero-Shot", clip_result)
         with mc2:
-            loaded_label = "✅ 已訓練" if resnet_result["model_loaded"] else "⚠️ 未訓練（隨機）"
-            render_model_card(f"ResNet50 {loaded_label}", resnet_result)
+            loaded_label = "✅ 已訓練" if cnn_result["model_loaded"] else "⚠️ 未訓練（隨機）"
+            render_model_card(f"自訓 CNN {loaded_label}", cnn_result)
     else:
         col_card, col_blank = st.columns([1, 1])
         with col_card:
             label = "CLIP Zero-Shot" if clip_result else (
-                "ResNet50 ✅" if resnet_result and resnet_result["model_loaded"] else "ResNet50 ⚠️ 未訓練"
+                "自訓 CNN ✅" if cnn_result and cnn_result["model_loaded"] else "自訓 CNN ⚠️ 未訓練"
             )
             render_model_card(label, primary)
 
