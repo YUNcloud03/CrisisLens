@@ -229,7 +229,7 @@ with st.sidebar:
     st.markdown("### ⚙️ 模型設定")
     model_mode = st.selectbox(
         "使用模型",
-        ["CLIP（Zero-Shot）", "ResNet50（Baseline）", "兩者比較"],
+        ["CLIP（Zero-Shot）", "自訓 CNN（My CNN）", "兩者比較"],
     )
 
     prompt_set_key = list(PROMPT_SETS.keys())[1]  # B 預設
@@ -247,6 +247,12 @@ with st.sidebar:
         st.success("✅ FAISS index 已建立")
     else:
         st.warning("⚠️ 尚未建立 FAISS index\n```\npython rag/build_index.py\n```")
+
+    from models.custom_cnn_classifier import weights_exist as cnn_weights_exist
+    if cnn_weights_exist():
+        st.success("✅ 自訓 CNN 已就緒")
+    else:
+        st.warning("⚠️ 自訓 CNN 權重不存在\n從 Kaggle 訓練後放入 models/")
 
     if GEMINI_API_KEY:
         st.success("✅ Gemini API 已設定")
