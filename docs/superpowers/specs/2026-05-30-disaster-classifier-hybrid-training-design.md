@@ -32,10 +32,12 @@ CrisisLens 是災情圖文分類系統，視覺辨識部分目前有兩個模型
 
 | 決策點 | 選擇 | 理由 |
 |---|---|---|
-| 類別數 | 統一 5 類（移除 Typhoon） | 避免類別不對等；資料集 A 沒有 Typhoon 樣本 |
-| 資料集 | `mikolajbabula/disaster-images-dataset-cnn-model` | folder name 與專案原 `FOLDER_TO_ZH` 完全相符 |
+| 類別數 | **4 類**（Cyclone / Earthquake / Flood / Wildfire） | 對齊實際選用的資料集 schema |
+| 資料集 | [`varpit94/disaster-images-dataset`](https://www.kaggle.com/datasets/varpit94/disaster-images-dataset) | 易取得；原本 mikolajbabula 5 類版本搜尋找不到 |
 | 訓練路線 | **自建 CNN from scratch + ablation** | 專案本質是練習訓練模型，自建是最純粹的學習 |
 | ResNet50 Partial Fine-tune | **移出本次範圍** | 改列為「未來增強」（觸發條件見 §9） |
+
+**4 類折衷說明**：相較最初 5 類規劃，**沒有** Landslide（土石流）與 Non_Damage（無災害）類別；**加回** Cyclone（颱風/氣旋）。後者影響 UI 體驗：任何非災害照片都會被強制分到 4 個災害類別之一，無法輸出「不是災情」結論。若有需要，未來可在 RAG 階段或低信心度 gating 補救。
 
 ### 1.4 與原 C-Full 路線的差異
 
@@ -49,27 +51,26 @@ CrisisLens 是災情圖文分類系統，視覺辨識部分目前有兩個模型
 
 ## 2. 類別結構調整
 
-### 2.1 目標 5 類
+### 2.1 目標 4 類
 
 | 英文 | 中文 | 對應資料集資料夾 |
 |---|---|---|
-| Earthquake Damage | 地震或建築損壞 | `Damaged_Infrastructure/` |
-| Flood | 淹水 | `Water_Disaster/` |
-| Fire | 火災 | `Fire_Disaster/` |
-| Landslide | 土石流或坍方 | `Land_Disaster/` |
-| Other or No Disaster | 其他或無明顯災害 | `Non_Damage/` |
+| Cyclone | 颱風或強風災損 | `Cyclone/` |
+| Earthquake | 地震或建築損壞 | `Earthquake/` |
+| Flood | 淹水 | `Flood/` |
+| Wildfire | 火災 | `Wildfire/` |
 
 ### 2.2 `utils/config.py` 修改
 
-- `CLASSES_EN`：刪除 `"Typhoon or Storm Damage"`（原 index 3）
-- `CLASSES_ZH`：刪除 `"颱風或強風災損"`（原 index 3）
-- `NUM_CLASSES`：6 → 5
-- `PROMPT_SETS` 三組（A/B/C）各自移除 typhoon 那一行
+- `CLASSES_EN`：改為 `["Cyclone", "Earthquake", "Flood", "Wildfire"]`
+- `CLASSES_ZH`：改為 `["颱風或強風災損", "地震或建築損壞", "淹水", "火災"]`
+- `NUM_CLASSES`：6 → **4**
+- `PROMPT_SETS` 三組（A/B/C）改為 4 個 prompt 對應 4 類
 
 ### 2.3 潛在風險與緩解
 
-- `Damaged_Infrastructure` 涵蓋廣義建築損壞（不限地震因素）→ 模型可能對「老舊建築 / 廢墟 / 一般髒亂街景」誤判為「地震」
-- **緩解方式**：訓練後檢查 confusion matrix 中 Damaged_Infrastructure 的 false positive 比例；若嚴重，UI 已有 `CLIP_LOW_CONF_THRESHOLD = 0.5` 低信心度機制可沿用
+- **沒有 Non_Damage 類別**：任何非災害的測試照片都會被強制分到 4 個災害類別之一。UI 體驗會有缺陷。
+- **緩解方式**：UI 已有 `CLIP_LOW_CONF_THRESHOLD = 0.5` 低信心度標示機制；對於信心度過低的預測，前端會 flag `need_review = 1`，可在 UI 顯示「無明顯災情」的視覺暗示
 
 ---
 

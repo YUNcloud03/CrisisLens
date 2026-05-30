@@ -865,10 +865,12 @@ git commit -m "chore: ignore custom_cnn weight files"
 
 ---
 
-## Task 8: Update `utils/config.py` to 5 classes
+## Task 8: Update `utils/config.py` to 4 classes (varpit94 dataset schema)
 
 **Files:**
 - Modify: `utils/config.py`
+
+> Scope note: the original spec/plan targeted 5 classes with Damaged_Infrastructure/Fire_Disaster/Land_Disaster/Water_Disaster/Non_Damage. The actually-attached Kaggle dataset (`varpit94/disaster-images-dataset`) uses 4 classes: Cyclone / Earthquake / Flood / Wildfire. This task aligns config.py to the dataset's real schema.
 
 - [ ] **Step 1: Apply the following edits**
 
@@ -879,19 +881,17 @@ The complete updated content for `utils/config.py` lines 15-74:
 ```python
 # ── Disaster classes ──────────────────────────────────────
 CLASSES_EN = [
-    "Earthquake Damage",
+    "Cyclone",
+    "Earthquake",
     "Flood",
-    "Fire",
-    "Landslide",
-    "Other or No Disaster",
+    "Wildfire",
 ]
 
 CLASSES_ZH = [
+    "颱風或強風災損",
     "地震或建築損壞",
     "淹水",
     "火災",
-    "土石流或坍方",
-    "其他或無明顯災害",
 ]
 
 CLASS_MAP = dict(zip(CLASSES_EN, CLASSES_ZH))
@@ -899,25 +899,22 @@ CLASS_MAP = dict(zip(CLASSES_EN, CLASSES_ZH))
 # ── Prompt sets ───────────────────────────────────────────
 PROMPT_SETS = {
     "A｜簡短版": [
+        "cyclone",
         "earthquake",
         "flood",
-        "fire",
-        "landslide",
-        "normal scene",
+        "wildfire",
     ],
     "B｜完整句版": [
+        "a photo of typhoon or cyclone damage with strong wind",
         "a photo of earthquake damage with collapsed buildings",
         "a photo of a flooded street after heavy rain",
-        "a photo of a fire disaster with smoke and flames",
-        "a photo of a landslide blocking a road",
-        "a normal street photo without disaster",
+        "a photo of wildfire with smoke and flames",
     ],
     "C｜社群情境版": [
+        "a social media photo showing typhoon or cyclone damage",
         "a social media photo showing earthquake damage after a strong earthquake",
         "a social media photo showing flood damage after heavy rainfall",
-        "a social media photo showing a fire emergency",
-        "a social media photo showing landslide damage in a mountain area",
-        "a social media photo showing no visible disaster",
+        "a social media photo showing a wildfire emergency",
     ],
 }
 
@@ -930,7 +927,7 @@ CHUNK_OVERLAP      = 80
 BATCH_SIZE   = 32
 LEARNING_RATE = 1e-3
 EPOCHS        = 5
-NUM_CLASSES   = 5
+NUM_CLASSES   = 4
 ```
 
 - [ ] **Step 2: Verify the change**
@@ -938,23 +935,23 @@ NUM_CLASSES   = 5
 ```bash
 "C:/PARA/4_python_project/CrisisLens/venv/Scripts/python.exe" -c "
 from utils.config import CLASSES_EN, CLASSES_ZH, PROMPT_SETS, NUM_CLASSES
-assert len(CLASSES_EN) == 5, f'CLASSES_EN has {len(CLASSES_EN)} entries, expected 5'
-assert len(CLASSES_ZH) == 5
-assert NUM_CLASSES == 5
-assert 'Typhoon or Storm Damage' not in CLASSES_EN
+assert len(CLASSES_EN) == 4, f'CLASSES_EN has {len(CLASSES_EN)} entries, expected 4'
+assert len(CLASSES_ZH) == 4
+assert NUM_CLASSES == 4
+assert CLASSES_EN == ['Cyclone', 'Earthquake', 'Flood', 'Wildfire']
 for key, prompts in PROMPT_SETS.items():
-    assert len(prompts) == 5, f'{key} has {len(prompts)} prompts'
-print('OK · 5 classes everywhere')
+    assert len(prompts) == 4, f'{key} has {len(prompts)} prompts'
+print('OK · 4 classes everywhere')
 "
 ```
 
-Expected: `OK · 5 classes everywhere`
+Expected: `OK · 4 classes everywhere`
 
 - [ ] **Step 3: Commit**
 
 ```bash
 git add utils/config.py
-git commit -m "refactor(config): drop Typhoon class (6 -> 5 classes)"
+git commit -m "refactor(config): align with varpit94 4-class disaster dataset"
 ```
 
 ---
@@ -985,8 +982,8 @@ WEIGHTS_PATH = os.path.join(os.path.dirname(__file__), "custom_cnn.pth")
 MAPPING_PATH = os.path.join(os.path.dirname(__file__), "custom_cnn_classes.json")
 
 # 預設 fallback（權重不在時）
-_DEFAULT_EN = ["Earthquake Damage", "Flood", "Fire", "Landslide", "Other or No Disaster"]
-_DEFAULT_ZH = ["地震或建築損壞", "淹水", "火災", "土石流或坍方", "其他或無明顯災害"]
+_DEFAULT_EN = ["Cyclone", "Earthquake", "Flood", "Wildfire"]
+_DEFAULT_ZH = ["颱風或強風災損", "地震或建築損壞", "淹水", "火災"]
 
 
 def _load_class_mapping():
