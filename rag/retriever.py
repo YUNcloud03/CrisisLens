@@ -4,10 +4,7 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import json
-import faiss
-import numpy as np
 import functools
-from sentence_transformers import SentenceTransformer
 
 from utils.config import FAISS_INDEX_PATH, TOP_K_DOCS
 
@@ -17,6 +14,11 @@ CHUNKS_PATH = FAISS_INDEX_PATH + "_chunks.json"
 
 @functools.lru_cache(maxsize=1)
 def _load_index():
+    # Lazy import：faiss + sentence_transformers (torch/transformers) 載入很慢，
+    # 只在第一次真的要檢索時才付出這個成本，避免 streamlit 啟動畫面卡住。
+    import faiss
+    from sentence_transformers import SentenceTransformer
+
     index_file  = FAISS_INDEX_PATH + ".bin"
     if not os.path.exists(index_file):
         return None, None, None
@@ -37,6 +39,8 @@ def retrieve(query: str, top_k: int = TOP_K_DOCS) -> list[dict]:
     Returns list of:
         {"text": "...", "source": "flood_sop.md", "score": 0.42}
     """
+    import numpy as np
+
     index, embedder, chunks = _load_index()
     if index is None:
         return []
