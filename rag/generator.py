@@ -15,7 +15,7 @@ def _init_gemini():
         return None
     genai.configure(api_key=GEMINI_API_KEY)
     return genai.GenerativeModel(
-        model_name="gemini-2.0-flash",
+        model_name="gemini-2.5-flash",
         system_instruction=RAG_SYSTEM_PROMPT,
     )
 

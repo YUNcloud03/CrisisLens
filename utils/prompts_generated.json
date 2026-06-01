@@ -1,0 +1,101 @@
+{
+  "_metadata": {
+    "version": "2.0",
+    "task": "single-label image classification",
+    "language": "en",
+    "samples_per_class": 12,
+    "labeling_rule": "Assign exactly ONE class. Resolve overlaps using priority: Fire > Landslide > Earthquake > Typhoon or Storm Damage > Flood > Other. (i.e. visible flame/smoke always wins; soil/mudflow from a slope beats generic water; dry structural collapse beats wind damage; wind-tearing beats standing water; standing water with no structural damage is Flood.)",
+    "discriminator_notes": {
+      "Earthquake Damage": "DRY structural collapse + ground fissures. No water, no smoke, no soil/mud from a slope.",
+      "Flood": "Standing or slow water as the dominant feature. Structures INTACT. No mud-from-slope, no flame.",
+      "Fire": "Active flame, glowing embers, or smoke plume is the dominant feature.",
+      "Typhoon or Storm Damage": "WIND-caused damage: torn/peeled/snapped/blown-away. Standing water is NOT the focus.",
+      "Landslide": "Mud/soil/rock that originated from a SLOPE. Always shows earth + an incline or earth-burial.",
+      "Other or No Disaster": "No damage of any kind. Calm, dry, intact, orderly scenes."
+    }
+  },
+  "Earthquake Damage": [
+    "Dry collapsed concrete high-rise, no water or smoke, rubble piled on dry pavement.",
+    "Cracked apartment wall with peeling plaster, interior fully dry, no flooding.",
+    "Multistory building tilted sideways onto a dry street, structure intact but leaning.",
+    "Snapped concrete columns exposing twisted rebar, no fire, no water.",
+    "Wide ground fissure splitting a dry paved road, clean fracture edges.",
+    "Pancake-collapsed floors stacked on each other, dry dust in the air.",
+    "Interior room with overturned furniture and fallen ceiling, completely dry.",
+    "Dry brick house with caved-in roof, debris is masonry not soil.",
+    "Buckled dry sidewalk with uplifted concrete slabs, no liquid present.",
+    "Detached building facade lying on a dry road, clear sky, no smoke.",
+    "Cracked dam or bridge pier on dry land, fracture lines visible, no flow.",
+    "Collapsed dry stone wall, scattered blocks, no mud and no flames."
+  ],
+  "Flood": [
+    "Urban street as standing brown water, buildings intact and undamaged above the waterline.",
+    "Murky water filling an intact living room, furniture standing, walls uncracked.",
+    "Calm sheet of standing water covering an intact paved road to the horizon.",
+    "Water risen to window level around an undamaged house, no structural cracks.",
+    "People wading through still chest-deep water, surrounding buildings intact.",
+    "Flat muddy water covering crop fields, no slope, no soil mound, fields intact.",
+    "City lights reflecting on vast motionless standing water at night, buildings dry above.",
+    "Parked cars submerged to the doors in still water, bodywork intact and unburnt.",
+    "Town square as a shallow uniform sheet of dirty standing water, no debris piles.",
+    "Slow river spilling over its bank onto flat land, no mudflow, structures intact.",
+    "Indoor tiled floor under a thin layer of still water, room otherwise undamaged.",
+    "Intact bridge with calm water reaching its underside, no collapse, no flow damage."
+  ],
+  "Fire": [
+    "Thick black smoke plume dominating the frame, rising from a building.",
+    "Bright orange flames actively consuming a structure at night.",
+    "Glowing red embers and charred black wood smoldering in ruins.",
+    "Wildfire flame front advancing across a dry hillside, smoke above.",
+    "Car fully engulfed in orange flames, heavy smoke pouring out.",
+    "Dense grey smoke billowing from a broken window, glow inside.",
+    "Forest section ablaze at night, trees outlined by orange fire.",
+    "Yellow and red flames erupting upward from a debris pile.",
+    "Charred blackened building shell still emitting wisps of smoke.",
+    "Flames and sparks bursting from a vehicle engine compartment.",
+    "Distant ridge line glowing orange under a smoke-darkened sky.",
+    "Interior room lit only by active flames, walls scorched black."
+  ],
+  "Typhoon or Storm Damage": [
+    "Roof sheeting peeled and torn off a building by wind, metal bent backward, no flooding.",
+    "Snapped utility poles and shredded cables strewn across a dry road by wind.",
+    "Tree trunk split and splintered by wind force, branches stripped, ground dry.",
+    "Billboard and signage twisted and bent flat against a wall by gusts.",
+    "Wind-blown debris and torn awnings scattered across a dry sidewalk.",
+    "Shattered windows blown inward, frames bent, no water on the floor.",
+    "Tin shack walls peeled open and crumpled by wind, contents exposed.",
+    "Uprooted tree toppled onto a dry road, root ball lifted by wind.",
+    "Sheets of corrugated metal flung and wrapped around a fence by wind.",
+    "Scaffolding and temporary structure blown over and tangled, ground dry.",
+    "Palm trees bent hard and fronds stripped under a dark storm sky, no flooding.",
+    "Collapsed lightweight roof scattered as wind-blown panels, no mud or fire."
+  ],
+  "Landslide": [
+    "Large pile of soil and rocks from an upslope source blocking a mountain road.",
+    "Brown mudflow streaming down a sloped street, originating from a hillside above.",
+    "House partially buried by brown earth sliding from the slope behind it.",
+    "Fresh exposed-earth scar carved down a steep hillside, debris fanned below.",
+    "Boulders and soil debris fanned across a road from a collapsed slope edge.",
+    "Valley floor filled with grey mud and splintered trunks from upstream slope failure.",
+    "Vehicles trapped and half-buried under a tongue of dark wet soil from a bank.",
+    "Retaining wall overtopped by cascading wet soil from the slope above.",
+    "Steep incline with disturbed vegetation and a fresh slump of loose earth.",
+    "Highway section sheared away and replaced by a slope of loose collapsed dirt.",
+    "Mud-coated debris cone spreading from a gully mouth onto flat ground.",
+    "Cracked tilting hillside with a detaching soil block above buildings."
+  ],
+  "Other or No Disaster": [
+    "Clear blue sky over an intact city skyline, no smoke and no damage.",
+    "People casually walking on a dry, clean, intact sidewalk.",
+    "Well-lit urban street at night with normal orderly vehicle traffic.",
+    "Green healthy trees and grass in a sunny, tidy park.",
+    "Calm river reflecting sunlight, banks intact, no debris.",
+    "Tidy interior room with organized furniture and warm lighting.",
+    "Dry paved road with normal cars and no visible damage.",
+    "Farmer tending healthy crops in a peaceful intact green field.",
+    "Starry night sky above an undisturbed, undamaged landscape.",
+    "Pet resting on a clean dry indoor floor, room orderly.",
+    "Buildings standing tall and fully intact under bright sun.",
+    "Quiet well-maintained residential street at dusk, everything intact."
+  ]
+}

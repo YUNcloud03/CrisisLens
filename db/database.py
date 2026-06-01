@@ -21,6 +21,7 @@ _MIGRATIONS = [
     ("reports", "clip_model_version",       "TEXT"),
     ("reports", "clip_prompt_version",      "TEXT"),
     ("reports", "clip_disaster_type",       "TEXT"),
+    ("reports", "clip_top2_gap",            "REAL"),
     ("reports", "clip_top3",                "TEXT"),
     ("reports", "resnet_model_version",     "TEXT"),
     ("reports", "resnet_disaster_type",     "TEXT"),

@@ -19,4 +19,5 @@ PRIORITY_RULE_VERSION    = "severity-weighted-v1"
 
 # ── 判斷閾值 ──────────────────────────────────────────────────
 CLIP_LOW_CONF_THRESHOLD  = 0.50   # CLIP 信心度低於此值 → need_review
+CLIP_TOP2_GAP_THRESHOLD  = 0.15   # Top-1 − Top-2 差距低於此值 → need_review（模型模糊）
 RESNET_ENABLED           = True   # 是否啟用 ResNet50 輔助判斷

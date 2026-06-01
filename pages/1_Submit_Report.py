@@ -17,7 +17,7 @@ from utils.versions import (
     CLIP_MODEL_VERSION, CLIP_PROMPT_VERSION,
     RESNET_MODEL_VERSION, RAG_INDEX_VERSION, RAG_PROMPT_VERSION,
     AGGREGATION_RULE_VERSION, PRIORITY_RULE_VERSION,
-    CLIP_LOW_CONF_THRESHOLD, RESNET_ENABLED,
+    CLIP_LOW_CONF_THRESHOLD, CLIP_TOP2_GAP_THRESHOLD, RESNET_ENABLED,
 )
 
 try:
@@ -181,9 +181,9 @@ if submitted:
         fpath = os.path.join(UPLOAD_DIR, fname)
         img.save(fpath, "JPEG")
 
-        # ── 主模型：CLIP（完整句版）─────────────────────────────
-        from models.clip_classifier import classify as clip_classify
-        clip_res = clip_classify(img, "B｜完整句版")
+        # ── 主模型：CLIP（多描述投票版 + ViT-L/14）──────────────
+        from models.clip_classifier import classify_multi_prompt as clip_classify
+        clip_res = clip_classify(img)
 
         # ── 輔助模型：ResNet50（若可用）──────────────────────────
         resnet_type = resnet_zh = resnet_conf = resnet_ver = None
@@ -201,13 +201,32 @@ if submitted:
         # ── 一致性判斷 & need_review ──────────────────────────
         # 用「中文標籤」比對，避免 CLIP "Fire" vs ResNet "Fire Disaster"
         # 等英文字串不同但語意相同的誤判。
-        model_agreement = 1
+        model_agreement  = 1
         need_review_flag = 0
+        review_reasons   = []
+
         if clip_res["confidence"] < CLIP_LOW_CONF_THRESHOLD:
-            need_review_flag = 1   # CLIP 信心度低
+            need_review_flag = 1
+            review_reasons.append(f"CLIP 信心度偏低（{clip_res['confidence']:.1%}）")
+
+        _top3 = clip_res.get("top_3", [])
+        clip_top2_gap = None
+        if len(_top3) >= 2:
+            clip_top2_gap = _top3[0]["score"] - _top3[1]["score"]
+            if clip_top2_gap < CLIP_TOP2_GAP_THRESHOLD:
+                need_review_flag = 1
+                review_reasons.append(
+                    f"Top-1／Top-2 差距過小（{clip_top2_gap:.2f}）：可能為"
+                    f"「{_top3[0]['class_zh']}」或「{_top3[1]['class_zh']}」"
+                )
+
         if resnet_zh and resnet_zh != clip_res["top_class_zh"]:
             model_agreement  = 0
-            need_review_flag = 1   # 兩模型中文類別不一致（真正語意不同）
+            need_review_flag = 1
+            review_reasons.append(
+                f"兩模型結果不一致：CLIP＝**{clip_res['top_class_zh']}** vs "
+                f"ResNet50＝**{resnet_zh or resnet_type}**"
+            )
 
         # ── RAG 建議 ──────────────────────────────────────────
         from rag.generator import generate_advice
@@ -278,6 +297,7 @@ if submitted:
             "clip_prompt_version":       CLIP_PROMPT_VERSION,
             "clip_disaster_type":        clip_res["top_class"],
             "clip_confidence":           clip_res["confidence"],
+            "clip_top2_gap":             clip_top2_gap,
             "clip_top3":                 json.dumps(clip_res["top_3"], ensure_ascii=False),
             "top3_predictions":          json.dumps(clip_res["top_3"], ensure_ascii=False),
             # ResNet50
@@ -315,17 +335,8 @@ if submitted:
 
     # need_review / 模型不一致警示
     if need_review_flag:
-        reasons = []
-        if clip_res["confidence"] < CLIP_LOW_CONF_THRESHOLD:
-            reasons.append(f"CLIP 信心度偏低（{clip_res['confidence']:.1%}）")
-        if model_agreement == 0:
-            reasons.append(
-                f"兩模型結果不一致："
-                f"CLIP＝**{clip_res['top_class_zh']}** vs "
-                f"ResNet50＝**{resnet_zh or resnet_type}**"
-            )
         st.warning(
-            "⚠️ **需人工審核**：" + "、".join(reasons) + "\n\n"
+            "⚠️ **需人工審核**：" + "、".join(review_reasons) + "\n\n"
             "回報已正常寫入並會顯示在熱圖，管理者可在 Admin Review 頁修正分類。"
         )
 
@@ -346,10 +357,12 @@ if submitted:
         return {"High":"#f87171","Medium":"#fbbf24","Low":"#4ade80"}.get(level,"#94a3b8")
 
     with r1:
+        _psrc = clip_res.get("prompt_source", "內建")
         st.markdown(f"""<div class="card">
         <div style="font-size:.72rem;color:#94a3b8;text-transform:uppercase;letter-spacing:.05em">災害類型</div>
         <div style="font-size:1.4rem;font-weight:800;color:#38bdf8">{clip_res['top_class_zh']}</div>
         <div style="color:#94a3b8;font-size:.82rem">信心度 {clip_res['confidence']:.1%}</div>
+        <div style="color:#64748b;font-size:.7rem;margin-top:4px">Prompt：{_psrc}</div>
         </div>""", unsafe_allow_html=True)
     with r2:
         st.markdown(f"""<div class="card">
