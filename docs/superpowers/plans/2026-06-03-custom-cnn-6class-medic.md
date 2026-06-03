@@ -41,9 +41,13 @@
 | `README.md` | 解 add/add 衝突（融合） | 專案說明，對齊 6 類 + ViT-L/14 |
 | `app.py` | 採 merge 結果 + 複查 | CNN/CLIP 雙路線 UI 並存 |
 | `models/custom_cnn_model.py` | 修改（預設 6、docstring） | 部署 CNN 架構唯一來源 |
-| `models/custom_cnn_classifier.py` | 不改碼 | 讀 json 動態決定類別數 |
+| `models/custom_cnn_classifier.py` | 不改碼 | 讀 json 動態決定類別數；同時供分析頁主分類與通報頁輔助交叉驗證 |
+| `pages/1_Submit_Report.py` | 輔助模型 ResNet→Custom CNN | CLIP 主判斷 + CNN 第二意見交叉驗證 |
+| `utils/versions.py` | `RESNET_ENABLED/RESNET_MODEL_VERSION`→`CNN_AUX_ENABLED/CNN_MODEL_VERSION`；修正 `CLIP_MODEL_VERSION` | MLOps 版本旗標 |
+| `models/resnet_baseline.py` / `models/train_resnet.py` | 刪除 | ResNet 推論/訓練（已由 CNN 取代） |
 | `train_custom_cnn_kaggle.ipynb` | 原地改寫成 MEDIC 6 類 | Kaggle 訓練 notebook |
 | `train_resnet_kaggle.ipynb` | 刪除 | （ResNet 已不用） |
+| DB `resnet_*` 欄位 / `seed.py` | **保留不動** | 沿用儲存 CNN 輔助結果（零 schema 變動） |
 | `models/custom_cnn.pth` | Phase 3 由使用者回放 | 6 類 v1 權重 |
 | `models/custom_cnn_classes.json` | Phase 3 由使用者回放 | 6 類對照 |
 
@@ -170,29 +174,103 @@ git add README.md
 
 ---
 
-### Task 4: 移除 ResNet notebook 與殘留設定
+### Task 4: ResNet→Custom CNN 輔助模型替換 + 完整移除 ResNet 程式
+
+**決策：** ResNet 權重不存在、輸出無人讀取、不決定分類；以 6 類 Custom CNN 取代它作為 Submit_Report 的「第二意見」交叉驗證模型。CLIP 仍是主判斷。**DB `resnet_*` 欄位沿用儲存 CNN 值（零 schema 變動）**。
 
 **Files:**
-- Delete: `train_resnet_kaggle.ipynb`
+- Modify: `pages/1_Submit_Report.py`、`utils/versions.py`、`utils/config.py`
+- Delete: `train_resnet_kaggle.ipynb`、`models/resnet_baseline.py`、`models/train_resnet.py`
+- **保留不動**：DB schema 的 `resnet_*` 欄位、`db/queries.py` 的 INSERT、`seed.py` 的 `resnet_*` key
 
-- [ ] **Step 1: 刪除 ResNet 訓練 notebook**
+- [ ] **Step 1: 刪除 ResNet 訓練 notebook 與推論/訓練程式**
 
 ```bash
-git rm train_resnet_kaggle.ipynb
+git rm train_resnet_kaggle.ipynb models/resnet_baseline.py models/train_resnet.py
 ```
-Expected: `rm 'train_resnet_kaggle.ipynb'`
+Expected: 三個檔被刪除。
 
-- [ ] **Step 2: 找出 app.py / clip_classifier 內的 ResNet 殘留**
+- [ ] **Step 2: Submit_Report 改用 CNN 作輔助模型（用 Edit 逐處替換）**
 
-Run: `grep -rni "resnet" --include=*.py .`
-逐處檢視，判斷哪些是死碼（選單已改自訓 CNN、不再呼叫 ResNet）。
+a) import 行（約第 18、20 行）：`RESNET_MODEL_VERSION` → `CNN_MODEL_VERSION`、`RESNET_ENABLED` → `CNN_AUX_ENABLED`。
 
-- [ ] **Step 3: 移除確認為死碼的 ResNet 引用**
+b) 輔助模型區塊（約第 188-199 行）整段換成：
+```python
+        # ── 輔助模型：自訓 CNN（第二意見交叉驗證，若權重存在）──────────
+        cnn_type = cnn_zh = cnn_conf = cnn_ver = None
+        if CNN_AUX_ENABLED:
+            try:
+                from models.custom_cnn_classifier import classify as cnn_classify, weights_exist
+                if weights_exist():
+                    c = cnn_classify(img)
+                    cnn_type = c.get("top_class")
+                    cnn_zh   = c.get("top_class_zh")   # 用中文標籤做比對
+                    cnn_conf = c.get("confidence")
+                    cnn_ver  = CNN_MODEL_VERSION
+            except Exception:
+                pass  # CNN 未訓練或出錯，靜默略過
+```
 
-對每個確認不再使用的 ResNet 分支/import/設定，用 Edit 移除。**保留任何仍被執行路徑引用的程式**——若不確定，於 Task 5 啟動 smoke test 時再確認。
-若此處移除了所有 `RESNET_WEIGHTS` 引用，回到 Task 2 Step 4 刪除 config 的該行並 `git add utils/config.py`。
+c) 不一致判斷（約第 223-229 行）整段換成：
+```python
+        if cnn_zh and cnn_zh != clip_res["top_class_zh"]:
+            model_agreement  = 0
+            need_review_flag = 1
+            review_reasons.append(
+                f"兩模型結果不一致：CLIP＝**{clip_res['top_class_zh']}** vs "
+                f"自訓 CNN＝**{cnn_zh or cnn_type}**"
+            )
+```
 
-- [ ] **Step 4: 加入暫存**
+d) `insert_model_run` 的 dict（約第 270 行）：`"resnet_model_version": resnet_ver,` → `"resnet_model_version": cnn_ver,`（**保留 DB key 名，值改 cnn**）。
+
+e) `full_report` 的 ResNet 區塊（約第 303-306 行）換成：
+```python
+            # 輔助模型：自訓 CNN（沿用 resnet_* 欄位儲存）
+            "resnet_model_version":      cnn_ver,
+            "resnet_disaster_type":      cnn_type,
+            "resnet_confidence":         cnn_conf,
+```
+
+f) 結果顯示區塊（約第 343-351 行）換成：
+```python
+    # 自訓 CNN 輔助結果（若有）—— 全部顯示中文標籤
+    if cnn_zh or cnn_type:
+        agree_icon = "✅ 一致" if model_agreement else "⚠️ 不一致"
+        cnn_display = cnn_zh or cnn_type
+        st.info(
+            f"**模型比對 {agree_icon}** ── "
+            f"CLIP: **{clip_res['top_class_zh']}**（{clip_res['confidence']:.1%}）　"
+            f"自訓 CNN: **{cnn_display}**（{cnn_conf:.1%}）"
+        )
+```
+
+- [ ] **Step 3: utils/versions.py 改名旗標 + 修正 CLIP 版號（用 Edit）**
+
+- `RESNET_MODEL_VERSION = "resnet50-linear-probe-v1"` → `CNN_MODEL_VERSION = "custom-cnn-medic-6class-v1"`
+- `RESNET_ENABLED = True   # 是否啟用 ResNet50 輔助判斷` → `CNN_AUX_ENABLED = True   # 是否啟用自訓 CNN 輔助交叉驗證`
+- `CLIP_MODEL_VERSION` 由 `"clip-vitb32-v1"` 改 `"clip-vitl14-v1"`
+
+- [ ] **Step 4: utils/config.py 移除 RESNET_WEIGHTS**
+
+確認沒有 .py 再引用後（resnet_baseline.py/train_resnet.py 已刪），用 Edit 刪除 `RESNET_WEIGHTS = "models/resnet50_linear.pth"` 行與其上方「# ── ResNet training ──」註解段（若該段已無內容）。
+
+- [ ] **Step 5: 驗證 ResNet 已清除、CNN 已接上、語法 OK**
+
+Run: `grep -rn "resnet\|RESNET\|ResNet" --include=*.py . | grep -v "db/\|seed.py"`
+Expected: 只剩 `pages/1_Submit_Report.py` 內以 `resnet_*` 為 **DB dict key** 的那幾行（值來自 cnn）；不應再有 `import.*resnet_baseline`、`RESNET_ENABLED`、`RESNET_WEIGHTS`、`RESNET_MODEL_VERSION`。
+
+Run: `python -c "import ast; ast.parse(open('pages/1_Submit_Report.py',encoding='utf-8').read()); ast.parse(open('utils/versions.py',encoding='utf-8').read()); print('語法 OK')"`
+Expected: `語法 OK`
+
+Run: `python -c "from utils.versions import CNN_AUX_ENABLED, CNN_MODEL_VERSION, CLIP_MODEL_VERSION; print(CNN_AUX_ENABLED, CNN_MODEL_VERSION, CLIP_MODEL_VERSION)"`
+Expected: `True custom-cnn-medic-6class-v1 clip-vitl14-v1`
+
+- [ ] **Step 6: README 調整（ResNet→CNN 輔助說明）**
+
+把 README 中先前寫「移除 ResNet」或殘留的 ResNet 段落，改寫成「通報頁以自訓 CNN 作 CLIP 的第二意見交叉驗證（不一致則標記需人工審核）」。
+
+- [ ] **Step 7: 加入暫存**
 
 ```bash
 git add -A
@@ -919,7 +997,8 @@ Expected: 合併歷史完整、工作區乾淨。
 
 - spec §2 類別映射 → Task 8（MEDIC_MAP）、Task 10（覆蓋檢查）✅
 - spec §5 notebook 各 cell → Task 8–17 ✅
-- spec §6 config/app/classifier/README/ResNet → Task 2–5、Task 7 ✅
+- spec §6 config/app/classifier/README → Task 2、3、5、7 ✅
+- spec §6 ResNet→CNN 輔助模型替換（Submit_Report + versions + 移除 ResNet 程式，DB 欄位沿用）→ Task 4 ✅
 - spec §7 三階段順序 → Phase 1/2/3 ✅
 - spec §8 風險（不平衡/normalize/截斷圖/session 時限/順序）→ Task 12（sqrt-inverse sampler）、Task 11（ImageNet norm）、Task 9（LOAD_TRUNCATED）、Task 8（MAX_SAMPLES_PER_CLASS）、Task 10（顯式 index）✅
 - spec §9 驗證 5 路徑 → Task 20 ✅
