@@ -16,8 +16,10 @@ WEIGHTS_PATH = os.path.join(os.path.dirname(__file__), "custom_cnn.pth")
 MAPPING_PATH = os.path.join(os.path.dirname(__file__), "custom_cnn_classes.json")
 
 # 預設 fallback（權重不在時）
-_DEFAULT_EN = ["Cyclone", "Earthquake", "Flood", "Wildfire"]
-_DEFAULT_ZH = ["颱風或強風災損", "地震或建築損壞", "淹水", "火災"]
+_DEFAULT_EN = ["Earthquake Damage", "Flood", "Fire",
+               "Typhoon or Storm Damage", "Landslide", "Other or No Disaster"]
+_DEFAULT_ZH = ["地震或建築損壞", "淹水", "火災",
+               "颱風或強風災損", "土石流或坍方", "其他或無明顯災害"]
 
 
 def _load_class_mapping():
