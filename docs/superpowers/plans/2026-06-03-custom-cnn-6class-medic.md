@@ -379,13 +379,14 @@ CURVES_PATH  = OUT_DIR / "training_curves.png"
 CM_PATH      = OUT_DIR / "confusion_matrix.png"
 
 # ── 訓練超參數 ─────────────────────────────────────────────
-BATCH_SIZE    = 32
+BATCH_SIZE    = 64
 LEARNING_RATE = 1e-3
 EPOCHS        = 15
 NUM_WORKERS   = 4          # Kaggle 約 4 核，吃滿加速資料載入
 SEED          = 42
 USE_DATA_PARALLEL = False  # True 則用 nn.DataParallel 吃滿 T4×2（可選加速）
-MAX_SAMPLES_PER_CLASS = None  # 設整數可對每類抽樣上限（控訓練時間）；None = 全量
+MAX_SAMPLES_PER_CLASS = None  # train 每類抽樣上限（控訓練時間）；None = 全量
+MAX_EVAL_PER_CLASS    = None  # val/test 每類抽樣上限（試跑可設小如 200 加速）；None = 全量
 
 # ── 6 類正準順序（對齊 utils/config.py，index 不可改）──────────
 CLASSES_EN = [
@@ -567,8 +568,8 @@ class MedicDataset(Dataset):
 
 
 train_ds = MedicDataset(raw[SPLIT_TRAIN], train_tf, max_per_class=MAX_SAMPLES_PER_CLASS)
-val_ds   = MedicDataset(raw[SPLIT_DEV],   val_tf)
-test_ds  = MedicDataset(raw[SPLIT_TEST],  val_tf)
+val_ds   = MedicDataset(raw[SPLIT_DEV],   val_tf, max_per_class=MAX_EVAL_PER_CLASS)
+test_ds  = MedicDataset(raw[SPLIT_TEST],  val_tf, max_per_class=MAX_EVAL_PER_CLASS)
 
 print("Train 類別分布：")
 for i, (en, n) in enumerate(zip(CLASSES_EN, train_ds.counts)):
@@ -581,12 +582,13 @@ class_w  = 1.0 / np.sqrt(np.maximum(counts, 1.0))
 sample_w = [class_w[label] for _, label in train_ds.samples]
 sampler  = WeightedRandomSampler(sample_w, num_samples=len(sample_w), replacement=True)
 
-train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, sampler=sampler,
-                          num_workers=NUM_WORKERS, pin_memory=True)
-val_loader   = DataLoader(val_ds, batch_size=BATCH_SIZE, shuffle=False,
-                          num_workers=NUM_WORKERS, pin_memory=True)
-test_loader  = DataLoader(test_ds, batch_size=BATCH_SIZE, shuffle=False,
-                          num_workers=NUM_WORKERS, pin_memory=True)
+_loader_kw = dict(num_workers=NUM_WORKERS, pin_memory=True)
+if NUM_WORKERS > 0:
+    _loader_kw.update(persistent_workers=True, prefetch_factor=4)
+
+train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, sampler=sampler, **_loader_kw)
+val_loader   = DataLoader(val_ds, batch_size=BATCH_SIZE, shuffle=False, **_loader_kw)
+test_loader  = DataLoader(test_ds, batch_size=BATCH_SIZE, shuffle=False, **_loader_kw)
 ```
 
 - [ ] **Step 2: 語法驗證**
