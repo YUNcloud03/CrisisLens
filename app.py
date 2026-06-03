@@ -153,12 +153,17 @@ def render_model_card(title: str, result: dict):
     top3      = result["top_3"]
     rclass    = score_to_risk_class(conf)
 
+    src       = result.get("prompt_source")
+    src_html  = (f'<div style="font-size:0.7rem;color:#64748b;margin-top:4px">'
+                 f'Prompt：{src}</div>') if src else ""
+
     card_html = f"""
     <div class="metric-card">
       <div class="score-label">{title}</div>
       <div class="score-value {rclass}">{zh}</div>
       <div class="score-sub">信心度 {conf:.1%}</div>
       {confidence_bar(conf, score_to_bar_class(conf))}
+      {src_html}
     </div>
     <div style="margin-bottom:8px;font-size:0.8rem;color:#475569;text-transform:uppercase;letter-spacing:0.06em">
       Top-3 類別
@@ -232,13 +237,20 @@ with st.sidebar:
         ["CLIP（Zero-Shot）", "自訓 CNN（My CNN）", "兩者比較"],
     )
 
-    prompt_set_key = list(PROMPT_SETS.keys())[1]  # B 預設
+    from models.clip_classifier import linear_probe_available
+    MULTI_PROMPT_OPTION  = "D｜多描述投票版（推薦）"
+    LINEAR_PROBE_OPTION  = "E｜Linear Probe（MEDIC訓練）"
+    _clip_options = [MULTI_PROMPT_OPTION] + list(PROMPT_SETS.keys())
+    if linear_probe_available():
+        _clip_options = [LINEAR_PROBE_OPTION] + _clip_options   # 有訓練權重才顯示，且設為首選
+
+    prompt_set_key = _clip_options[0]  # 預設
     if "CLIP" in model_mode or "比較" in model_mode:
         prompt_set_key = st.selectbox(
             "CLIP Prompt Set",
-            list(PROMPT_SETS.keys()),
-            index=1,
-            help="A=簡短、B=完整句、C=社群情境",
+            _clip_options,
+            index=0,
+            help="E=訓練分類器（最準，需權重）、D=多描述投票（Gemini）、A/B/C=zero-shot prompt",
         )
 
     st.markdown("---")
@@ -260,7 +272,7 @@ with st.sidebar:
         st.info("未設定 GEMINI_API_KEY\n將使用內建指引")
 
     st.markdown("---")
-    st.caption("v1.0 · CLIP + ResNet50 + RAG")
+    st.caption("v2.0 · CLIP ViT-L/14（A-E）+ 自訓 CNN 6 類 + RAG")
 
 
 # ═══════════════════════════════════════════════════
@@ -326,8 +338,15 @@ if analyze_btn:
 
     with st.spinner("模型推論中..."):
         if "CLIP" in model_mode or "比較" in model_mode:
-            from models.clip_classifier import classify as clip_classify
-            clip_result = clip_classify(img, prompt_set_key)
+            from models.clip_classifier import (
+                classify as clip_classify, classify_multi_prompt, classify_linear_probe,
+            )
+            if prompt_set_key.startswith("E"):
+                clip_result = classify_linear_probe(img)          # MEDIC 訓練的分類器
+            elif prompt_set_key.startswith("D"):
+                clip_result = classify_multi_prompt(img)          # 多描述投票 + Gemini prompt
+            else:
+                clip_result = clip_classify(img, prompt_set_key)  # 舊單 prompt（A/B/C 比較用）
 
         if "自訓 CNN" in model_mode or "比較" in model_mode:
             from models.custom_cnn_classifier import classify as cnn_classify

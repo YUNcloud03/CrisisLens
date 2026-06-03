@@ -1,7 +1,8 @@
 # ── 訓練圖片資料集（檔案量大，用 Google Drive / 雲端共享）──
 data/
 
-# ── 資料庫 WAL 暫存檔（不上傳，每次關閉後自動合併回 .db）──
+# ── 資料庫（含測試回報資料；app 啟動會自動建 schema，不需進 repo）──
+crisislens.db
 crisislens.db-shm
 crisislens.db-wal
 
@@ -14,6 +15,9 @@ uploads/
 # ── FAISS index（可由 rag/build_index.py 重建）────────
 rag/faiss_index/
 
+# ── 訓練腳本自動產生的圖（可重新生成）────────────────
+outputs/*.png
+
 # ── Python 暫存 ───────────────────────────────────────
 __pycache__/
 *.pyc
@@ -21,11 +25,16 @@ __pycache__/
 *.pyd
 .Python
 
+# ── CLIP 特徵快取（209MB，太大；可由 Colab notebook 重新生成，或放 Drive 共享）──
+features/
+
 # ── 模型權重（檔案太大）──────────────────────────────
 models/*.pth
 models/*.pt
 models/*.bin
 models/*_classes.json
+# 例外：linear probe 權重只有 20KB 且 app 執行必需，必須進 repo
+!models/clip_linear_head.pth
 
 # ── 虛擬環境 ──────────────────────────────────────────
 venv/
