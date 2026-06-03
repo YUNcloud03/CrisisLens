@@ -8,7 +8,6 @@ GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
 
 # ── Model ─────────────────────────────────────────────────
 CLIP_MODEL_NAME   = "ViT-L/14"
-RESNET_WEIGHTS    = "models/resnet50_linear.pth"
 FAISS_INDEX_PATH  = "rag/faiss_index"
 RAG_DOCS_DIR      = "rag_docs"
 
@@ -110,8 +109,4 @@ TOP_K_DOCS         = 4
 CHUNK_SIZE         = 400   # characters per chunk
 CHUNK_OVERLAP      = 80
 
-# ── ResNet training ───────────────────────────────────────
-BATCH_SIZE   = 32
-LEARNING_RATE = 1e-3
-EPOCHS        = 5
 NUM_CLASSES   = 6

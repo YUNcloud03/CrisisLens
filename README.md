@@ -160,7 +160,7 @@ CrisisLens/
 │   └── superpowers/                    # spec / plan 設計文件（內部開發紀錄）
 │
 └── outputs/
-    └── resnet_training_curve.png       # （ResNet 訓練曲線，未啟用時為舊版產出）
+    └── training_curves.png             # （自訓 CNN 訓練曲線，由 Kaggle notebook 產出）
 ```
 
 ---
@@ -531,16 +531,16 @@ notebook 使用 HuggingFace `datasets` 下載 `QCRI/MEDIC`，需要 Kaggle inter
 所有版號集中在 [utils/versions.py](utils/versions.py)，**每次更新對應元件時請手動遞增版號**：
 
 ```python
-CLIP_MODEL_VERSION       = "clip-vitb32-v1"
+CLIP_MODEL_VERSION       = "clip-vitl14-v1"
 CLIP_PROMPT_VERSION      = "B-complete-sentence-v1"
-RESNET_MODEL_VERSION     = "resnet50-linear-probe-v1"   # 保留，未來 Partial FT 路線觸發時使用
+CNN_MODEL_VERSION        = "custom-cnn-medic-6class-v1"   # 自訓 CNN 輔助交叉驗證版號
 RAG_INDEX_VERSION        = "faiss-multilingual-minilm-v1"
 RAG_PROMPT_VERSION       = "gemini-flash-rag-v1"
 AGGREGATION_RULE_VERSION = "h3-district-city-fallback-v2"
 PRIORITY_RULE_VERSION    = "severity-weighted-v1"
 ```
 
-> 未來新增自訓 CNN 版本時，建議加上 `CUSTOM_CNN_VERSION = "disaster-cnn-v1-4block"` 並在推論時記錄。
+> 通報頁以自訓 CNN 作 CLIP 的第二意見交叉驗證：若兩者中文標籤不一致，系統自動標記 `need_review=1` 提交人工審核。ResNet 已完整移除，DB 的 `resnet_*` 欄位沿用儲存 CNN 輔助結果（零 schema 變動）。
 
 每次推論都會把版號寫入 `model_runs` 表，配合 `admin_corrections` 可追蹤：
 - 哪個版本的模型在哪個時間點做了什麼預測

@@ -5,10 +5,10 @@ MLOps 版本常數。
 """
 
 # ── 模型版本 ──────────────────────────────────────────────────
-CLIP_MODEL_VERSION       = "clip-vitb32-v1"
+CLIP_MODEL_VERSION       = "clip-vitl14-v1"
 CLIP_PROMPT_VERSION      = "B-complete-sentence-v1"   # 對應 PROMPT_SETS["B｜完整句版"]
 
-RESNET_MODEL_VERSION     = "resnet50-linear-probe-v1"
+CNN_MODEL_VERSION        = "custom-cnn-medic-6class-v1"
 
 RAG_INDEX_VERSION        = "faiss-multilingual-minilm-v1"
 RAG_PROMPT_VERSION       = "gemini-flash-rag-v1"
@@ -20,4 +20,4 @@ PRIORITY_RULE_VERSION    = "severity-weighted-v1"
 # ── 判斷閾值 ──────────────────────────────────────────────────
 CLIP_LOW_CONF_THRESHOLD  = 0.50   # CLIP 信心度低於此值 → need_review
 CLIP_TOP2_GAP_THRESHOLD  = 0.15   # Top-1 − Top-2 差距低於此值 → need_review（模型模糊）
-RESNET_ENABLED           = True   # 是否啟用 ResNet50 輔助判斷
+CNN_AUX_ENABLED          = True   # 是否啟用自訓 CNN 輔助交叉驗證

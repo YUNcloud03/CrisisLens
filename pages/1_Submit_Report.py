@@ -15,9 +15,9 @@ from utils.image_utils import load_image, resize_for_display
 from utils.ui_theme import apply_theme
 from utils.versions import (
     CLIP_MODEL_VERSION, CLIP_PROMPT_VERSION,
-    RESNET_MODEL_VERSION, RAG_INDEX_VERSION, RAG_PROMPT_VERSION,
+    CNN_MODEL_VERSION, RAG_INDEX_VERSION, RAG_PROMPT_VERSION,
     AGGREGATION_RULE_VERSION, PRIORITY_RULE_VERSION,
-    CLIP_LOW_CONF_THRESHOLD, CLIP_TOP2_GAP_THRESHOLD, RESNET_ENABLED,
+    CLIP_LOW_CONF_THRESHOLD, CLIP_TOP2_GAP_THRESHOLD, CNN_AUX_ENABLED,
 )
 
 try:
@@ -185,22 +185,22 @@ if submitted:
         from models.clip_classifier import classify_multi_prompt as clip_classify
         clip_res = clip_classify(img)
 
-        # ── 輔助模型：ResNet50（若可用）──────────────────────────
-        resnet_type = resnet_zh = resnet_conf = resnet_ver = None
-        if RESNET_ENABLED:
+        # ── 輔助模型：自訓 CNN（第二意見交叉驗證，若權重存在）──────────
+        cnn_type = cnn_zh = cnn_conf = cnn_ver = None
+        if CNN_AUX_ENABLED:
             try:
-                from models.resnet_baseline import classify as resnet_classify
-                r50 = resnet_classify(img)
-                resnet_type = r50.get("top_class")
-                resnet_zh   = r50.get("top_class_zh")   # 用中文標籤做比對
-                resnet_conf = r50.get("confidence")
-                resnet_ver  = RESNET_MODEL_VERSION
+                from models.custom_cnn_classifier import classify as cnn_classify, weights_exist
+                if weights_exist():
+                    c = cnn_classify(img)
+                    cnn_type = c.get("top_class")
+                    cnn_zh   = c.get("top_class_zh")   # 用中文標籤做比對
+                    cnn_conf = c.get("confidence")
+                    cnn_ver  = CNN_MODEL_VERSION
             except Exception:
-                pass  # ResNet 未訓練或出錯，靜默略過
+                pass  # CNN 未訓練或出錯，靜默略過
 
         # ── 一致性判斷 & need_review ──────────────────────────
-        # 用「中文標籤」比對，避免 CLIP "Fire" vs ResNet "Fire Disaster"
-        # 等英文字串不同但語意相同的誤判。
+        # 用「中文標籤」比對，避免 CLIP 與自訓 CNN 英文標籤字串略有差異的誤判。
         model_agreement  = 1
         need_review_flag = 0
         review_reasons   = []
@@ -220,12 +220,12 @@ if submitted:
                     f"「{_top3[0]['class_zh']}」或「{_top3[1]['class_zh']}」"
                 )
 
-        if resnet_zh and resnet_zh != clip_res["top_class_zh"]:
+        if cnn_zh and cnn_zh != clip_res["top_class_zh"]:
             model_agreement  = 0
             need_review_flag = 1
             review_reasons.append(
                 f"兩模型結果不一致：CLIP＝**{clip_res['top_class_zh']}** vs "
-                f"ResNet50＝**{resnet_zh or resnet_type}**"
+                f"自訓 CNN＝**{cnn_zh or cnn_type}**"
             )
 
         # ── RAG 建議 ──────────────────────────────────────────
@@ -267,7 +267,7 @@ if submitted:
             "trigger":                   "submit",
             "clip_model_version":        CLIP_MODEL_VERSION,
             "clip_prompt_version":       CLIP_PROMPT_VERSION,
-            "resnet_model_version":      resnet_ver,
+            "resnet_model_version":      cnn_ver,
             "rag_index_version":         RAG_INDEX_VERSION,
             "rag_prompt_version":        RAG_PROMPT_VERSION,
             "aggregation_rule_version":  AGGREGATION_RULE_VERSION,
@@ -300,10 +300,10 @@ if submitted:
             "clip_top2_gap":             clip_top2_gap,
             "clip_top3":                 json.dumps(clip_res["top_3"], ensure_ascii=False),
             "top3_predictions":          json.dumps(clip_res["top_3"], ensure_ascii=False),
-            # ResNet50
-            "resnet_model_version":      resnet_ver,
-            "resnet_disaster_type":      resnet_type,
-            "resnet_confidence":         resnet_conf,
+            # 輔助模型：自訓 CNN（沿用 resnet_* 欄位儲存）
+            "resnet_model_version":      cnn_ver,
+            "resnet_disaster_type":      cnn_type,
+            "resnet_confidence":         cnn_conf,
             # 最終決策
             "disaster_type":             clip_res["top_class"],
             "model_agreement":           model_agreement,
@@ -340,14 +340,14 @@ if submitted:
             "回報已正常寫入並會顯示在熱圖，管理者可在 Admin Review 頁修正分類。"
         )
 
-    # ResNet50 輔助結果（若有）—— 全部顯示中文標籤
-    if resnet_zh or resnet_type:
+    # 自訓 CNN 輔助結果（若有）—— 全部顯示中文標籤
+    if cnn_zh or cnn_type:
         agree_icon = "✅ 一致" if model_agreement else "⚠️ 不一致"
-        resnet_display = resnet_zh or resnet_type
+        cnn_display = cnn_zh or cnn_type
         st.info(
             f"**模型比對 {agree_icon}** ── "
             f"CLIP: **{clip_res['top_class_zh']}**（{clip_res['confidence']:.1%}）　"
-            f"ResNet50: **{resnet_display}**（{resnet_conf:.1%}）"
+            f"自訓 CNN: **{cnn_display}**（{cnn_conf:.1%}）"
         )
 
     st.markdown("<hr>", unsafe_allow_html=True)
