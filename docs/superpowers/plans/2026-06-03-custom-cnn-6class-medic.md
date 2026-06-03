@@ -499,7 +499,9 @@ print("image 型別：", type(ex["image"]))
 Run: `python -c "import json; nb=json.load(open('train_custom_cnn_kaggle.ipynb',encoding='utf-8')); compile(''.join(nb['cells'][7]['source']),'<c7>','exec'); print('cell7 OK')"`
 Expected: `cell7 OK`
 
-> 註：實際 split 名稱（dev vs validation）在 Kaggle 執行 Step 1 印出 `raw` 後確認；程式已自動偵測。
+> 備註：cell 7 開頭加有可選 Kaggle Secret `HF_TOKEN` 認證區塊。認證生效的條件是同時執行 `os.environ["HF_TOKEN"] = _hf_tok` 與 `login(token=_hf_tok, ...)`（兩者缺一不可）；僅把 secret 取到變數但不呼叫 `os.environ` 設定與 `login()` 則不會對 HuggingFace 認證生效。未在 Kaggle 設 `HF_TOKEN` 時，`except` 分支以未認證方式繼續下載（速度較慢、有速率限制）。
+
+> 備註：實際 split 名稱（dev vs validation）在 Kaggle 執行 Step 1 印出 `raw` 後確認；程式已自動偵測。
 
 ---
 
