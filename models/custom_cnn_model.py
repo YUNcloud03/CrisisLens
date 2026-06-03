@@ -11,13 +11,13 @@ import torch.nn as nn
 
 
 class DisasterCNN_v1(nn.Module):
-    """4-block CNN baseline for 5-class disaster classification.
+    """4-block CNN baseline for 6-class disaster classification.
 
     Input  : (B, 3, 224, 224)  RGB image, ImageNet-normalized
     Output : (B, num_classes)   logits (apply softmax for probabilities)
     Params : ~400 K
     """
-    def __init__(self, num_classes: int = 5):
+    def __init__(self, num_classes: int = 6):
         super().__init__()
         self.features = nn.Sequential(
             # Block 1: 224 -> 112
