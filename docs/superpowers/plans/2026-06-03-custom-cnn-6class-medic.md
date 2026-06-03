@@ -381,12 +381,13 @@ CM_PATH      = OUT_DIR / "confusion_matrix.png"
 # ── 訓練超參數 ─────────────────────────────────────────────
 BATCH_SIZE    = 64
 LEARNING_RATE = 1e-3
-EPOCHS        = 15
+EPOCHS        = 30
 NUM_WORKERS   = 4          # Kaggle 約 4 核，吃滿加速資料載入
 SEED          = 42
 USE_DATA_PARALLEL = False  # True 則用 nn.DataParallel 吃滿 T4×2（可選加速）
 MAX_SAMPLES_PER_CLASS = None  # train 每類抽樣上限（控訓練時間）；None = 全量
 MAX_EVAL_PER_CLASS    = None  # val/test 每類抽樣上限（試跑可設小如 200 加速）；None = 全量
+CACHE_IN_MEMORY       = True   # 影像解碼一次存記憶體（提高 GPU 使用率）；全量資料若 RAM 不足設 False
 
 # ── 6 類正準順序（對齊 utils/config.py，index 不可改）──────────
 CLASSES_EN = [
@@ -542,8 +543,10 @@ class MedicDataset(Dataset):
 
     每個 split 各自持有獨立 transform —— 不共享底層 dataset，
     因此不會有舊版「val transform 覆蓋 train augmentation」的副作用。
+    cache=True 時於 __init__ 將影像解碼並縮到 <=256 存記憶體，
+    之後每 epoch 只做 augmentation，免重複 JPEG 解碼（提高 GPU 使用率）。
     """
-    def __init__(self, hf_split, transform, max_per_class=None):
+    def __init__(self, hf_split, transform, max_per_class=None, cache=False):
         self.hf_split  = hf_split
         self.transform = transform
         self.samples   = []                 # list of (hf_index, label6)
@@ -553,23 +556,38 @@ class MedicDataset(Dataset):
             label6 = MEDIC_MAP.get(names[dt])
             if label6 is None:
                 continue
+            # 注意：max_per_class 取每類在原始 dataset 的「前 N 筆」（未洗牌），純為控訓練時間；若在意分布偏差可改先洗牌再截取。
             if max_per_class is not None and self.counts[label6] >= max_per_class:
                 continue
             self.counts[label6] += 1
             self.samples.append((i, label6))
 
+        # 可選：解碼一次存記憶體（搭配 num_workers=0，避免多進程複製快取）
+        self.images = None
+        if cache:
+            self.images = []
+            for hf_i, _ in self.samples:
+                im = self.hf_split[hf_i]["image"].convert("RGB")
+                im.thumbnail((256, 256))   # 等比縮到 <=256 邊長，省記憶體
+                self.images.append(im.copy())
+            mb = sum(im.size[0] * im.size[1] * 3 for im in self.images) / 1e6
+            print(f"  已快取 {len(self.images)} 張影像於記憶體（約 {mb:.0f} MB）")
+
     def __len__(self):
         return len(self.samples)
 
     def __getitem__(self, idx):
-        hf_i, label = self.samples[idx]
-        img = self.hf_split[hf_i]["image"].convert("RGB")
-        return self.transform(img), label
+        if self.images is not None:
+            img = self.images[idx]
+        else:
+            hf_i, _ = self.samples[idx]
+            img = self.hf_split[hf_i]["image"].convert("RGB")
+        return self.transform(img), self.samples[idx][1]
 
 
-train_ds = MedicDataset(raw[SPLIT_TRAIN], train_tf, max_per_class=MAX_SAMPLES_PER_CLASS)
-val_ds   = MedicDataset(raw[SPLIT_DEV],   val_tf, max_per_class=MAX_EVAL_PER_CLASS)
-test_ds  = MedicDataset(raw[SPLIT_TEST],  val_tf, max_per_class=MAX_EVAL_PER_CLASS)
+train_ds = MedicDataset(raw[SPLIT_TRAIN], train_tf, max_per_class=MAX_SAMPLES_PER_CLASS, cache=CACHE_IN_MEMORY)
+val_ds   = MedicDataset(raw[SPLIT_DEV],   val_tf,  max_per_class=MAX_EVAL_PER_CLASS, cache=CACHE_IN_MEMORY)
+test_ds  = MedicDataset(raw[SPLIT_TEST],  val_tf,  max_per_class=MAX_EVAL_PER_CLASS, cache=CACHE_IN_MEMORY)
 
 print("Train 類別分布：")
 for i, (en, n) in enumerate(zip(CLASSES_EN, train_ds.counts)):
@@ -582,9 +600,13 @@ class_w  = 1.0 / np.sqrt(np.maximum(counts, 1.0))
 sample_w = [class_w[label] for _, label in train_ds.samples]
 sampler  = WeightedRandomSampler(sample_w, num_samples=len(sample_w), replacement=True)
 
-_loader_kw = dict(num_workers=NUM_WORKERS, pin_memory=True)
-if NUM_WORKERS > 0:
-    _loader_kw.update(persistent_workers=True, prefetch_factor=4)
+# 快取在記憶體時用單進程（避免每個 worker 複製整份快取）；否則開多 worker 平行解碼
+if CACHE_IN_MEMORY:
+    _loader_kw = dict(num_workers=0, pin_memory=True)
+else:
+    _loader_kw = dict(num_workers=NUM_WORKERS, pin_memory=True)
+    if NUM_WORKERS > 0:
+        _loader_kw.update(persistent_workers=True, prefetch_factor=4)
 
 train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, sampler=sampler, **_loader_kw)
 val_loader   = DataLoader(val_ds, batch_size=BATCH_SIZE, shuffle=False, **_loader_kw)
@@ -643,8 +665,9 @@ def train_one_model(model_class, model_name: str, epochs: int = EPOCHS):
     model     = model_class(NUM_CLASSES).to(device)
     if USE_DATA_PARALLEL and torch.cuda.device_count() > 1:
         model = nn.DataParallel(model)
+    loss_fn   = nn.CrossEntropyLoss(label_smoothing=0.1)
     optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
-    loss_fn   = nn.CrossEntropyLoss()
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
     scaler    = torch.amp.GradScaler("cuda") if device == "cuda" else None
 
     history      = {"train_loss": [], "val_loss": [], "val_acc": []}
@@ -700,6 +723,7 @@ def train_one_model(model_class, model_name: str, epochs: int = EPOCHS):
 
         print(f"  Epoch {epoch:2d}/{epochs}  Train Loss: {train_loss:.4f}  "
               f"Val Loss: {val_loss:.4f}  Val Acc: {val_acc:.4f}  ({time.time()-t0:.1f}s)")
+        scheduler.step()
 
     print(f"  → Best Val Acc: {best_val_acc:.4f}")
     return history, best_val_acc, best_state
