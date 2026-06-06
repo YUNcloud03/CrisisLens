@@ -169,7 +169,7 @@ def _load_linear_head():
     if not os.path.exists(_LINEAR_HEAD_PATH):
         return None
     import torch.nn as nn
-    ckpt = torch.load(_LINEAR_HEAD_PATH, map_location="cpu")
+    ckpt = torch.load(_LINEAR_HEAD_PATH, map_location="cpu", weights_only=True)
     head = nn.Linear(ckpt["in_dim"], len(ckpt["classes_en"]))
     head.load_state_dict(ckpt["state_dict"])
     head.eval()

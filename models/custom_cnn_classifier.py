@@ -40,7 +40,7 @@ def _load_model():
 
     loaded = False
     if os.path.exists(WEIGHTS_PATH):
-        state = torch.load(WEIGHTS_PATH, map_location=device)
+        state = torch.load(WEIGHTS_PATH, map_location=device, weights_only=True)
         model.load_state_dict(state)
         loaded = True
 

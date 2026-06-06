@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS reports (
     clip_prompt_version    TEXT,
     clip_disaster_type     TEXT,
     clip_confidence        REAL,
+    clip_top2_gap          REAL,           -- Top-1／Top-2 相似度差距（need_review 用）
     clip_top3              TEXT,           -- JSON（取代舊 top3_predictions）
     top3_predictions       TEXT,           -- 保留舊欄位向下相容
 
