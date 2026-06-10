@@ -1,0 +1,41 @@
+# ── 訓練資料（太大）────────────────────────────────────────
+data/
+
+# ── 本機 SQLite（Azure 用 PostgreSQL）───────────────────────
+crisislens.db
+crisislens.db-shm
+crisislens.db-wal
+
+# ── 模型權重（從 Azure Blob 或掛載取得）────────────────────
+models/*.pth
+models/*.pt
+models/*.bin
+models/*_classes.json
+
+# ── 上傳圖片（Azure Blob Storage）──────────────────────────
+uploads/
+
+# ── Python 暫存 ────────────────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+.Python
+
+# ── 虛擬環境 ────────────────────────────────────────────────
+venv/
+.venv/
+env/
+
+# ── 開發設定 ────────────────────────────────────────────────
+.env
+.vscode/
+.idea/
+*.swp
+
+# ── Git ────────────────────────────────────────────────────
+.git/
+.gitignore
+
+# ── OS ─────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db

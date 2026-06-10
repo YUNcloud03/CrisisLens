@@ -89,7 +89,8 @@ def generate_advice(
             }
 
         except Exception as e:
-            print(f"Gemini 呼叫失敗：{e}")
+            from utils.logger import log_error
+            log_error("rag_generate", f"Gemini 呼叫失敗：{e}", exc_info=True)
 
     # ── 4. Fallback（無 API key 或無 index）─────────────────
     fallback = FALLBACK_ADVICE.get(disaster_type_zh, FALLBACK_ADVICE["其他或無明顯災害"])

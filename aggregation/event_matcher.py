@@ -10,7 +10,7 @@ from db.queries import (
     get_candidate_events, insert_event,
     get_reports_by_event, update_event_summary, update_report_event,
     get_reports_by_h3_cell, upsert_h3_summary,
-    get_reports_by_grid, upsert_grid_summary,
+    get_reports_by_grid, upsert_grid_summary, get_all_events,
 )
 from aggregation.distance import haversine_meters
 from aggregation.h3_utils import (
@@ -18,16 +18,102 @@ from aggregation.h3_utils import (
     are_neighbors, DEFAULT_RESOLUTION
 )
 from aggregation.scoring import (
-    calc_event_priority, calc_credibility, _severity_level, _priority_level
+    calc_severity_score, calc_vulnerability_score, calc_credibility_score,
+    calc_priority_score, calc_credibility, _severity_level, _priority_level
 )
 from utils.versions import AGGREGATION_RULE_VERSION, PRIORITY_RULE_VERSION
 
-GEO_THRESHOLD_M   = 300
-TIME_WINDOW_HOURS = 2.0
+GEO_THRESHOLD_M = 300
+
+# ── 各災害群組的時間窗口（小時）───────────────────────────────
+# 新回報的 event_time 距離既有事件的 latest_report_time 超過窗口 → 不合併
+TIME_WINDOWS: dict[str, float] = {
+    "weather_water": 48.0,   # 颱風 / 洪水：同一颱風可能持續 2 天
+    "earth_land":    12.0,   # 地震 / 土石流：主震 + 餘震期
+    "fire":           4.0,   # 火災：同一場火通常在 4 小時內持續回報
+    "other":          6.0,   # 其他：保守值
+}
+
+DISASTER_GROUPS = {
+    "weather_water": {
+        "Flood", "Water Disaster", "Typhoon or Storm Damage",
+    },
+    "earth_land": {
+        "Earthquake Damage", "Damaged Infrastructure", "Landslide", "Land Disaster",
+    },
+    "fire": {
+        "Fire", "Fire Disaster",
+    },
+    "other": {
+        "Other or No Disaster", "Non Damage",
+    },
+}
+
+
+def disaster_group(disaster_type: str) -> str:
+    """Return the aggregation group for a model disaster label."""
+    for group, labels in DISASTER_GROUPS.items():
+        if disaster_type in labels:
+            return group
+    return disaster_type or "other"
 
 
 def _now() -> str:
     return datetime.now().isoformat(timespec="seconds")
+
+
+def _parse_dt(s: str | None) -> datetime | None:
+    """
+    容錯時間字串解析。
+    支援格式：
+        2026-05-25T14:30:00   (ISO)
+        2026-05-25 14:30:00
+        2026-05-25 14:30
+        2026-5-26 12:30       (月/日缺前置零)
+        2026-06-08T00:05
+    回傳 None 表示無法解析。
+    """
+    if not s:
+        return None
+    # 統一空白/T 分隔，補前置零
+    s = s.strip().replace("T", " ")
+    for fmt in (
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d %H:%M",
+        "%Y-%-m-%-d %H:%M:%S",   # Linux only
+        "%Y-%-m-%-d %H:%M",
+    ):
+        try:
+            return datetime.strptime(s, fmt)
+        except ValueError:
+            pass
+    # 最後手段：用 fromisoformat（Python 3.11+ 容錯較佳）
+    try:
+        return datetime.fromisoformat(s)
+    except ValueError:
+        return None
+
+
+def _within_time_window(report: dict, event: dict) -> bool:
+    """
+    回傳 True 表示「新回報在時間窗口內，可合併進此事件」。
+
+    比較：report.event_time  vs  event.latest_report_time
+    窗口由 disaster_group 決定（見 TIME_WINDOWS）。
+
+    任一時間無法解析 → 保守回傳 True（不因此阻止合併）。
+    """
+    group  = disaster_group(report.get("disaster_type", ""))
+    window = TIME_WINDOWS.get(group, 6.0)
+
+    report_dt = _parse_dt(report.get("event_time") or report.get("upload_time"))
+    event_dt  = _parse_dt(event.get("latest_report_time"))
+
+    if report_dt is None or event_dt is None:
+        return True   # 時間資料不足，保守允許合併
+
+    diff_hours = abs((report_dt - event_dt).total_seconds()) / 3600
+    return diff_hours <= window
 
 
 # ── Grid Summary 重新計算（h3 / district / city 三種） ────────
@@ -165,20 +251,31 @@ def _refresh_h3_summary(h3_cell: str):
 
 # ── 事件配對 ─────────────────────────────────────────────────
 def find_matching_event(report: dict) -> int | None:
-    event_time = report.get("event_time") or report.get("upload_time") or _now()
-    candidates = get_candidate_events(
-        disaster_type=report["disaster_type"],
-        event_time=event_time,
-        hours=TIME_WINDOW_HOURS,
-    )
+    """
+    v2 聚合：災害群組 + 地理鄰近 + 時間窗口 三重判斷。
 
-    # 1. H3 優先：同 cell 或鄰接 cell
+    通過條件（三者同時滿足）：
+      1. 同一災害群組（Typhoon+Flood / Earthquake+Landslide / Fire / Other）
+      2. 地理鄰近（H3 鄰格 > GPS 300m > 同行政區，三擇一）
+      3. 新回報的 event_time 距既有事件的 latest_report_time ≤ 群組時間窗口
+    """
+    report_group = disaster_group(report.get("disaster_type", ""))
+
+    # 只考慮非終止狀態的事件（resolved / archived 不再接受新回報）
+    candidates = [
+        ev for ev in get_all_events()
+        if disaster_group(ev.get("disaster_type", "")) == report_group
+        and ev.get("status") not in ("resolved", "archived", "closed")
+    ]
+
+    # ── 1. H3 優先：同 cell 或鄰接 cell ─────────────────────
     if report.get("h3_cell"):
         for ev in candidates:
             if ev.get("h3_cell") and are_neighbors(report["h3_cell"], ev["h3_cell"]):
-                return ev["event_id"]
+                if _within_time_window(report, ev):
+                    return ev["event_id"]
 
-    # 2. GPS 距離（無 H3 但有座標）
+    # ── 2. GPS 距離（無 H3 但有座標）──────────────────────
     if report.get("latitude") and report.get("longitude"):
         for ev in candidates:
             if ev.get("latitude") and ev.get("longitude"):
@@ -186,26 +283,68 @@ def find_matching_event(report: dict) -> int | None:
                     report["latitude"], report["longitude"],
                     ev["latitude"],    ev["longitude"],
                 )
-                if dist <= GEO_THRESHOLD_M:
+                if dist <= GEO_THRESHOLD_M and _within_time_window(report, ev):
                     return ev["event_id"]
 
-    # 3. Fallback：city + district
+    # ── 3. Fallback：city + district ──────────────────────
     for ev in candidates:
         if (report.get("city")     and report["city"]     == ev.get("city") and
                 report.get("district") and report["district"] == ev.get("district")):
-            return ev["event_id"]
+            if _within_time_window(report, ev):
+                return ev["event_id"]
 
     return None
 
 
+# ── 英文災害類型 → 中文簡稱對照 ─────────────────────────────
+_TYPE_ZH: dict[str, str] = {
+    "Earthquake Damage":       "地震",
+    "Damaged Infrastructure":  "建物損壞",
+    "Flood":                   "淹水",
+    "Water Disaster":          "淹水",
+    "Fire":                    "火災",
+    "Fire Disaster":           "火災",
+    "Typhoon or Storm Damage": "颱風",
+    "Landslide":               "土石流",
+    "Land Disaster":           "土石流",
+    "Other or No Disaster":    "其他災情",
+    "Non Damage":              "其他災情",
+}
+
+
+def _disaster_zh(disaster_type: str) -> str:
+    """回傳災害類型中文簡稱，未知類型保留原字串。"""
+    return _TYPE_ZH.get(disaster_type, disaster_type or "災情")
+
+
 def _build_event_name(report: dict) -> str:
+    """
+    格式：{日期} {縣市}{行政區}{災害中文}事件
+    範例：
+      2026-06-08 台北市信義區颱風事件
+      2025-09-21 花蓮縣秀林鄉地震事件
+      2026-06-08 地震事件            ← 無 GPS / 地址時
+    """
+    # 日期（取 event_time 或 upload_time 的前 10 碼）
+    raw_time = report.get("event_time") or report.get("upload_time") or ""
+    date_str = raw_time[:10].replace("T", " ").strip() if raw_time else ""
+
+    # 地點（city + district，避免重複）
+    city     = (report.get("city")     or "").strip()
+    district = (report.get("district") or "").strip()
+    location = city + district          # e.g. "台北市信義區"
+
+    # 災害類型中文
+    dtype_zh = _disaster_zh(report.get("disaster_type", ""))
+
     parts = []
-    for key in ("city", "district", "location_name"):
-        v = report.get(key)
-        if v: parts.append(v)
-    parts.append(report.get("disaster_type", "災害"))
-    parts.append("事件")
-    return "".join(parts)
+    if date_str:
+        parts.append(date_str)
+    if location:
+        parts.append(location)
+    parts.append(dtype_zh + "事件")
+
+    return " ".join(parts)   # "2026-06-08 台北市信義區颱風事件"
 
 
 # ── 主入口 ────────────────────────────────────────────────────
@@ -219,10 +358,17 @@ def aggregate(report: dict, report_id: int) -> dict:
 
     if matched_id is None:
         # 建立新事件
-        sev_score = report.get("report_severity_score", 0)
+        sev_score = report.get("report_severity_score", 0) or 0
         sev_level = report.get("report_severity_level", "Low")
         ppl       = report.get("reported_people_count", 0) or 0
-        pri_score, pri_level = _initial_priority(report)
+
+        # 三層評分
+        vuln_score = calc_vulnerability_score(
+            report.get("city") or "", report.get("district")
+        )
+        temp_event = {"status": "pending_review"}
+        cred_score, cred_level = calc_credibility_score(temp_event, [report])
+        pri_score, pri_level   = calc_priority_score(sev_score, vuln_score, cred_score)
 
         event_data = {
             "event_name":                _build_event_name(report),
@@ -247,9 +393,12 @@ def aggregate(report: dict, report_id: int) -> dict:
             "has_trapped_people":        int(bool(report.get("has_trapped_people"))),
             "has_injured_people":        int(bool(report.get("has_injured_people"))),
             "road_blocked":              int(bool(report.get("road_blocked"))),
+            "power_outage":              int(bool(report.get("power_outage"))),
+            "vulnerability_score":       vuln_score,
+            "credibility_score":         cred_score,
+            "credibility_level":         cred_level,
             "event_priority_score":      pri_score,
             "event_priority_level":      pri_level,
-            "credibility_level":         calc_credibility(1),
             "aggregation_rule_version":  AGGREGATION_RULE_VERSION,
             "priority_rule_version":     PRIORITY_RULE_VERSION,
             "status":                    "pending_review",
@@ -311,15 +460,14 @@ def _refresh_event(event_id: int, latest_time: str):
     trapped  = int(any(r.get("has_trapped_people") for r in reports))
     injured  = int(any(r.get("has_injured_people") for r in reports))
     blocked  = int(any(r.get("road_blocked")        for r in reports))
+    outage   = int(any(r.get("power_outage")        for r in reports))
 
-    merged = {**event,
-              "has_trapped_people":         trapped,
-              "has_injured_people":         injured,
-              "road_blocked":               blocked,
-              "report_count":               len(reports),
-              "estimated_people_need_help": max_ppl}
-    pri_score, pri_level = calc_event_priority(merged, reports)
-    cred = calc_credibility(len(reports), event.get("status", "pending_review"))
+    # 三層評分
+    vuln_score = calc_vulnerability_score(
+        event.get("city") or "", event.get("district")
+    )
+    cred_score, cred_level = calc_credibility_score(event, reports)
+    pri_score, pri_level   = calc_priority_score(max_sev, vuln_score, cred_score)
 
     update_event_summary(event_id, {
         "report_count":               len(reports),
@@ -331,8 +479,11 @@ def _refresh_event(event_id: int, latest_time: str):
         "has_trapped_people":         trapped,
         "has_injured_people":         injured,
         "road_blocked":               blocked,
+        "power_outage":               outage,
+        "vulnerability_score":        vuln_score,
+        "credibility_score":          cred_score,
+        "credibility_level":          cred_level,
         "event_priority_score":       pri_score,
         "event_priority_level":       pri_level,
-        "credibility_level":          cred,
         "updated_at":                 _now(),
     })

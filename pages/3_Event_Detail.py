@@ -4,31 +4,20 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import json
 import streamlit as st
+from datetime import datetime
 from db.database import init_db
-from db.queries import get_event, get_reports_by_event, get_all_events
-from utils.ui_theme import apply_theme
+from db.queries import (
+    get_event, get_reports_by_event, get_all_events,
+    insert_admin_correction, get_admin_corrections,
+)
+from utils.auth import require_admin
+from utils.ui_theme import apply_theme, badge, page_header, stat_card, top_pill
 
 init_db()
 
-st.set_page_config(page_title="事件詳情｜CrisisLens", page_icon="🔎", layout="wide")
+st.set_page_config(page_title="事件詳情｜CrisisLens", page_icon="🔎", layout="wide", initial_sidebar_state="expanded")
 apply_theme()
-
-st.markdown("""
-<style>
-html,body,[data-testid="stAppViewContainer"],[data-testid="stApp"]{background:#080d1a!important;color:#e2e8f0!important}
-[data-testid="stSidebar"]{background:#0a1220!important;border-right:1px solid rgba(30,64,120,.45)}
-h1,h2,h3,h4{color:#e2e8f0!important}
-.card{background:#0d1628;border:1px solid rgba(30,64,120,.45);border-radius:10px;padding:16px 20px;margin-bottom:12px}
-.report-card{background:#0a1220;border:1px solid rgba(30,64,120,.35);border-radius:8px;padding:12px 14px;margin-bottom:8px}
-.badge{display:inline-block;padding:2px 10px;border-radius:999px;font-size:.72rem;font-weight:600}
-.badge-high{background:rgba(220,38,38,.18);color:#f87171;border:1px solid rgba(248,113,113,.35)}
-.badge-medium{background:rgba(217,119,6,.18);color:#fbbf24;border:1px solid rgba(251,191,36,.35)}
-.badge-low{background:rgba(22,163,74,.18);color:#4ade80;border:1px solid rgba(74,222,128,.35)}
-.badge-blue{background:rgba(56,189,248,.18);color:#38bdf8;border:1px solid rgba(56,189,248,.35)}
-.advice-item{background:rgba(56,189,248,.06);border-left:3px solid #38bdf8;padding:8px 12px;margin:4px 0;border-radius:0 6px 6px 0;font-size:.85rem}
-hr{border-color:rgba(30,64,120,.45)!important}
-footer{visibility:hidden}
-</style>""", unsafe_allow_html=True)
+admin = require_admin()
 
 # ── 事件選擇 ──────────────────────────────────────────────────
 events = get_all_events()
@@ -48,14 +37,26 @@ if not ev:
     st.error("找不到事件")
     st.stop()
 
-st.markdown(f"## 🔎 {ev.get('event_name','事件詳情')}")
-st.markdown("<hr>", unsafe_allow_html=True)
+top_pill(4, "事件詳細頁", "Event Detail")
+page_header(
+    ev.get("event_name", "事件詳情"),
+    "查看事件摘要、現場狀況、回報影像與最嚴重回報的應變建議。",
+    "Event Detail",
+)
 
 # ── 事件摘要卡片 ──────────────────────────────────────────────
 def _badge(level: str) -> str:
-    cls = {"High":"badge-high","Medium":"badge-medium","Low":"badge-low",
-           "Verified":"badge-blue"}.get(level,"badge-low")
-    return f'<span class="badge {cls}">{level}</span>'
+    return badge(level, level)
+
+
+def _fmt_time(value: str | None) -> str:
+    if not value:
+        return "-"
+    raw = str(value)
+    try:
+        return datetime.fromisoformat(raw).strftime("%Y-%m-%d %H:%M")
+    except ValueError:
+        return raw[:16].replace("T", " ")
 
 pri   = ev.get("event_priority_level","Low")
 cred  = ev.get("credibility_level","Low")
@@ -65,23 +66,11 @@ loc   = f"{ev.get('city','') or ''}{ev.get('district','') or ''}{ev.get('locatio
 
 m1, m2, m3, m4 = st.columns(4)
 with m1:
-    st.markdown(f"""<div class="card">
-    <div style="font-size:.72rem;color:#94a3b8;text-transform:uppercase">事件優先級</div>
-    <div style="font-size:1.8rem;font-weight:800;{'color:#f87171' if pri=='High' else 'color:#fbbf24' if pri=='Medium' else 'color:#4ade80'}">{pri}</div>
-    <div style="color:#94a3b8;font-size:.82rem">分數 {ev.get('event_priority_score',0)}</div>
-    </div>""", unsafe_allow_html=True)
+    st.markdown(stat_card("事件優先級", pri, f"分數 {ev.get('event_priority_score',0)}", {"High":"red","Medium":"yellow","Low":"green"}.get(pri, "text")), unsafe_allow_html=True)
 with m2:
-    st.markdown(f"""<div class="card">
-    <div style="font-size:.72rem;color:#94a3b8;text-transform:uppercase">疑似待協助人數</div>
-    <div style="font-size:1.8rem;font-weight:800;color:#38bdf8">約 {ppl} 人</div>
-    <div style="color:#94a3b8;font-size:.75rem">來源：使用者回報 · 需人工確認</div>
-    </div>""", unsafe_allow_html=True)
+    st.markdown(stat_card("疑似待協助人數", f"約 {ppl} 人", "來源：使用者回報 · 需人工確認", "blue"), unsafe_allow_html=True)
 with m3:
-    st.markdown(f"""<div class="card">
-    <div style="font-size:.72rem;color:#94a3b8;text-transform:uppercase">回報數 / 可信度</div>
-    <div style="font-size:1.8rem;font-weight:800;color:#e2e8f0">{ev.get('report_count',0)} 筆</div>
-    <div style="margin-top:4px">{_badge(cred)}</div>
-    </div>""", unsafe_allow_html=True)
+    st.markdown(stat_card("回報數 / 可信度", f"{ev.get('report_count',0)} 筆", cred, "text"), unsafe_allow_html=True)
 with m4:
     trapped_t = "🔴 有人受困" if ev.get("has_trapped_people") else "✅ 無受困回報"
     injured_t = "🟠 有人受傷" if ev.get("has_injured_people") else "✅ 無受傷回報"
@@ -127,7 +116,7 @@ for i, rpt in enumerate(reports, 1):
     sev_r  = rpt.get("report_severity_level","Low")
     sev_s  = rpt.get("report_severity_score", 0)
     conf   = rpt.get("clip_confidence", 0) or 0
-    t_str  = (rpt.get("upload_time") or "")[:16]
+    t_str  = _fmt_time(rpt.get("upload_time"))
     dt_str = rpt.get("disaster_type","")
 
     trapped_i = "🔴 受困  " if rpt.get("has_trapped_people") else ""
@@ -135,7 +124,8 @@ for i, rpt in enumerate(reports, 1):
     blocked_i = "🚧 道路阻斷" if rpt.get("road_blocked")     else ""
     ppl_i     = f"👥 {rpt.get('reported_people_count',0)} 人" if rpt.get("reported_people_count") else ""
 
-    with st.expander(f"回報 #{rpt['report_id']}  |  {_badge(sev_r)}  |  {dt_str}  |  {t_str}", expanded=(i==1)):
+    expander_title = f"回報 #{rpt['report_id']} | {sev_r} | {dt_str} | {t_str}"
+    with st.expander(expander_title, expanded=(i==1)):
         ec1, ec2 = st.columns([1, 2])
 
         with ec1:
@@ -184,3 +174,95 @@ for i, rpt in enumerate(reports, 1):
                         </div>""", unsafe_allow_html=True)
                 except Exception:
                     pass
+
+            # ── 安全標籤顯示 ──────────────────────────────────
+            in_safety  = rpt.get("input_safety_label",  "safe") or "safe"
+            out_safety = rpt.get("output_safety_label", "safe") or "safe"
+            safety_rsn = rpt.get("safety_reason", "") or ""
+            _SAFETY_COLOR = {"safe": "#4ade80", "review": "#fbbf24", "block": "#f87171", "sanitize": "#fb923c"}
+            if in_safety != "safe" or out_safety != "safe":
+                _in_c  = _SAFETY_COLOR.get(in_safety, "#94a3b8")
+                _out_c = _SAFETY_COLOR.get(out_safety, "#94a3b8")
+                st.markdown(
+                    f"""<div style="margin-top:8px;padding:6px 10px;border-radius:6px;
+                        background:rgba(251,191,36,.08);border:1px solid rgba(251,191,36,.3);font-size:.78rem">
+                      🛡️ 安全標記 —
+                      輸入：<span style="color:{_in_c};font-weight:700">{in_safety}</span>
+                      ／輸出：<span style="color:{_out_c};font-weight:700">{out_safety}</span>
+                      {"<br><span style='color:#94a3b8'>" + safety_rsn + "</span>" if safety_rsn else ""}
+                    </div>""",
+                    unsafe_allow_html=True,
+                )
+
+            # ── need_review 警示 ──────────────────────────────
+            if rpt.get("need_review"):
+                st.markdown(
+                    '<div style="margin-top:6px;font-size:.78rem;color:#fbbf24">'
+                    '⚠️ AI 信心度不足或模型結果不一致，建議人工確認災害類型</div>',
+                    unsafe_allow_html=True,
+                )
+
+        # ── Admin Correction（管理員人工修正）──────────────────
+        _DISASTER_TYPES_EN = [
+            "Earthquake Damage", "Flood", "Fire",
+            "Typhoon or Storm Damage", "Landslide", "Other or No Disaster",
+        ]
+        _DISASTER_TYPES_ZH = ["地震或建築損壞", "淹水", "火災", "颱風或強風災損", "土石流或坍方", "其他或無明顯災害"]
+        _TYPE_LABELS = [f"{zh}（{en}）" for zh, en in zip(_DISASTER_TYPES_ZH, _DISASTER_TYPES_EN)]
+
+        # 現有修正記錄
+        existing = get_admin_corrections(report_id=rpt["report_id"])
+        with st.expander(f"📝 管理員修正（{len(existing)} 筆歷史）", expanded=False):
+            if existing:
+                for cx in existing:
+                    st.markdown(
+                        f"<div style='font-size:.78rem;color:#94a3b8;padding:4px 0'>"
+                        f"🕒 {cx.get('corrected_at','')[:16]} · "
+                        f"由 <strong>{cx.get('corrected_by','')}</strong> 修正 "
+                        f"<code>{cx.get('field_name','')}</code> ：{cx.get('original_value','')} → "
+                        f"<strong style='color:#38bdf8'>{cx.get('corrected_value','')}</strong>"
+                        f"{'　（' + cx.get('correction_reason','') + '）' if cx.get('correction_reason') else ''}"
+                        f"</div>",
+                        unsafe_allow_html=True,
+                    )
+            else:
+                st.caption("尚無修正記錄。")
+
+            st.markdown("**新增修正**")
+            _cur_type = rpt.get("disaster_type", _DISASTER_TYPES_EN[0])
+            _cur_idx  = _DISASTER_TYPES_EN.index(_cur_type) if _cur_type in _DISASTER_TYPES_EN else 0
+            _new_label = st.selectbox(
+                "修正後災害類型",
+                _TYPE_LABELS,
+                index=_cur_idx,
+                key=f"corr_type_{rpt['report_id']}",
+            )
+            _new_en = _DISASTER_TYPES_EN[_TYPE_LABELS.index(_new_label)]
+            _reason = st.text_input(
+                "修正原因（選填）",
+                placeholder="例如：現場確認為土石流非地震損壞",
+                key=f"corr_reason_{rpt['report_id']}",
+            )
+            if st.button("提交修正", key=f"corr_submit_{rpt['report_id']}"):
+                if _new_en == _cur_type:
+                    st.warning("修正值與原值相同，未寫入。")
+                else:
+                    _admin_name = (admin or {}).get("username", "admin")
+                    try:
+                        insert_admin_correction({
+                            "corrected_at":       datetime.now().isoformat(timespec="seconds"),
+                            "corrected_by":       _admin_name,
+                            "report_id":          rpt["report_id"],
+                            "event_id":           ev["event_id"],
+                            "field_name":         "disaster_type",
+                            "original_value":     _cur_type,
+                            "corrected_value":    _new_en,
+                            "correction_reason":  _reason or None,
+                            "used_for_retraining": 0,
+                            "retraining_batch_id": None,
+                            "notes":              None,
+                        })
+                        st.success(f"已記錄修正：{_cur_type} → {_new_en}")
+                        st.rerun()
+                    except Exception as _ce:
+                        st.error(f"修正失敗：{_ce}")

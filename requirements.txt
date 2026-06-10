@@ -11,8 +11,16 @@ faiss-cpu>=1.8.0
 sentence-transformers>=3.0.0
 google-generativeai>=0.7.0
 python-dotenv>=1.0.0
+transformers>=4.42.0
+accelerate>=0.30.0
 pypdf>=4.0.0
 geopy>=2.4.0
 pydeck>=0.9.0
 h3>=3.7.7
 streamlit-js-eval>=0.1.7
+# ── 資料庫 ────────────────────────────────────────────────────
+psycopg2-binary>=2.9.9       # PostgreSQL 連線（含 libpq，不需本機安裝）
+# ── HTTP（geocoding）────────────────────────────────────────
+requests>=2.31.0
+# ── Azure Blob Storage（圖片雲端儲存，選用）─────────────────
+azure-storage-blob>=12.19.0

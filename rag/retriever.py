@@ -4,21 +4,29 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import json
-import faiss
 import numpy as np
 import functools
-from sentence_transformers import SentenceTransformer
 
 from utils.config import FAISS_INDEX_PATH, TOP_K_DOCS
 
 EMBED_MODEL = "paraphrase-multilingual-MiniLM-L12-v2"
 CHUNKS_PATH = FAISS_INDEX_PATH + "_chunks.json"
 
+try:
+    import faiss
+except ImportError:
+    faiss = None
+
+try:
+    from sentence_transformers import SentenceTransformer
+except ImportError:
+    SentenceTransformer = None
+
 
 @functools.lru_cache(maxsize=1)
 def _load_index():
     index_file  = FAISS_INDEX_PATH + ".bin"
-    if not os.path.exists(index_file):
+    if faiss is None or SentenceTransformer is None or not os.path.exists(index_file):
         return None, None, None
 
     index    = faiss.read_index(index_file)

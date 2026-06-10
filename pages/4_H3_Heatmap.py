@@ -8,45 +8,38 @@ from datetime import datetime
 import streamlit as st
 import streamlit.components.v1 as components
 import pandas as pd
-import h3 as h3lib
+try:
+    import h3 as h3lib
+except ImportError:
+    h3lib = None
 
 from db.database import init_db
 from db.queries import get_all_h3_summaries, get_grid_summaries
-from utils.ui_theme import apply_theme
+from utils.auth import require_admin
+from utils.ui_theme import apply_theme, page_header, stat_card, top_pill
 
 init_db()  # 含一次性資料遷移（h3_grid_summary → grid_summary、backfill grid_id/grid_type）
 
 # ── 頁面設定 ──────────────────────────────────────────────────
-st.set_page_config(page_title="H3 地圖｜CrisisLens", page_icon="🗺️", layout="wide")
+st.set_page_config(page_title="H3 地圖｜CrisisLens", page_icon="🗺️", layout="wide", initial_sidebar_state="expanded")
 apply_theme()
-st.markdown("""
-<style>
-html,body,[data-testid="stAppViewContainer"],[data-testid="stApp"]{background:#080d1a!important;color:#e2e8f0!important}
-[data-testid="stSidebar"]{background:#0a1220!important;border-right:1px solid rgba(30,64,120,.45)}
-h1,h2,h3,h4{color:#e2e8f0!important}
-.card{background:#0d1628;border:1px solid rgba(30,64,120,.45);border-radius:10px;padding:16px 20px;margin-bottom:12px}
-.metric-val{font-size:1.8rem;font-weight:800}
-.metric-label{font-size:.72rem;color:#94a3b8;text-transform:uppercase;margin-bottom:4px}
-hr{border-color:rgba(30,64,120,.45)!important}
-footer{visibility:hidden}
-</style>""", unsafe_allow_html=True)
-
-st.markdown(f"""
-<section class="cl-hero">
-  <div>
-    <div class="cl-kicker">CrisisLens Rescue</div>
-    <h1 class="cl-title">Multi-scale H3 災情聚合地圖</h1>
-    <div class="cl-subtitle">
-      整合多尺度 H3 空間聚合與災情通報，協助救援單位快速辨識高風險區域與資源需求。
-    </div>
-  </div>
-  <div class="cl-timebox">
-    {datetime.now().strftime("%H:%M:%S")}
-    <span>{datetime.now().strftime("%Y / %m / %d")}</span>
-  </div>
-</section>
-<hr>
-""", unsafe_allow_html=True)
+require_admin()
+if h3lib is None:
+    top_pill(3, "管理端 - Dashboard 總覽", "H3 Heatmap")
+    page_header(
+        "Multi-scale H3 災情聚合地圖",
+        "目前環境缺少 h3 套件，無法渲染 H3 熱區圖。請安裝 requirements.txt 後重新啟動。",
+        "CrisisLens Rescue",
+    )
+    st.error("缺少 h3 套件：請執行 `pip install -r requirements.txt`。")
+    st.stop()
+top_pill(3, "管理端 - Dashboard 總覽", "H3 Heatmap")
+page_header(
+    "Multi-scale H3 災情聚合地圖",
+    "整合多尺度 H3 空間聚合與災情通報，協助救援單位快速辨識高風險區域與資源需求。",
+    "CrisisLens Rescue",
+    f"<strong>{datetime.now().strftime('%H:%M:%S')}</strong>{datetime.now().strftime('%Y / %m / %d')}",
+)
 
 TAIWAN_LAT, TAIWAN_LNG = 23.97, 120.97
 MAP_HEIGHT = 680
@@ -369,10 +362,22 @@ def build_map_html(d5: list, d7: list, d9: list) -> str:
 # ═══════════════════════════════════════════════════════════════
 # 主程式
 # ═══════════════════════════════════════════════════════════════
+
+# ── Sidebar 控制 ──────────────────────────────────────────────
+with st.sidebar:
+    st.markdown("### 🗺️ 顯示設定")
+    show_closed = st.toggle(
+        "顯示已關閉事件的格網",
+        value=False,
+        help="關閉 → 只顯示含有 pending_review / active 事件的格網；\n開啟 → 同時顯示 resolved / archived 歷史格網。"
+    )
+
+_active_only = not show_closed
+
 # ── 讀取所有 grid 類型的摘要 ─────────────────────────────────
-h3_summaries       = get_grid_summaries(grid_type="h3")        # H3 → 顯示在地圖
-district_summaries = get_grid_summaries(grid_type="district")  # 行政區（無 H3 cell，地圖不顯示）
-city_summaries     = get_grid_summaries(grid_type="city")      # 縣市（無 H3 cell，地圖不顯示）
+h3_summaries       = get_grid_summaries(grid_type="h3",       active_only=_active_only)
+district_summaries = get_grid_summaries(grid_type="district", active_only=_active_only)
+city_summaries     = get_grid_summaries(grid_type="city",     active_only=_active_only)
 
 # ── 若無 H3 資料，注入台灣測試格網讓地圖可以驗證渲染 ─────────
 _using_demo = False
@@ -426,29 +431,29 @@ if _using_demo:
             "在「災情回報」頁面開啟 GPS 定位或輸入手動座標後送出，這裡即會顯示真實資料。"
         )
 elif district_summaries or city_summaries:
+    _filter_note = "（僅顯示進行中事件）" if _active_only else "（含已關閉事件）"
     st.info(
-        f"🗺️ 地圖顯示 **{len(h3_summaries)}** 個 H3 格網（含 GPS 座標）。"
+        f"🗺️ 地圖顯示 **{len(h3_summaries)}** 個 H3 格網 {_filter_note}（含 GPS 座標）。"
         f"另有 **{len(district_summaries)}** 個行政區格網、**{len(city_summaries)}** 個縣市格網"
         "（僅地址、無 GPS）已計入統計但未顯示在地圖上。"
     )
+elif _active_only:
+    st.success("✅ 所有格網的事件均已關閉，目前無進行中的災情。")
 
 # ── 頂部統計卡 ────────────────────────────────────────────────
 c1, c2, c3, c4 = st.columns(4)
-def _stat(col, label, val, color="#38bdf8"):
+def _stat(col, label, val, tone="blue"):
     with col:
-        st.markdown(f"""<div class="card">
-        <div class="metric-label">{label}</div>
-        <div class="metric-val" style="color:{color}">{val}</div>
-        </div>""", unsafe_allow_html=True)
+        st.markdown(stat_card(label, val, tone=tone), unsafe_allow_html=True)
 
 total_reports = int(all_df["report_count"].sum()) if not all_df.empty else 0
 high_grids    = int((all_df["max_priority_level"] == "High").sum()) if not all_df.empty else 0
 total_ppl     = int(all_df["estimated_people_need_help"].sum()) if not all_df.empty else 0
 
-_stat(c1, "H3 格網數 (含聚合)",  len(h3_summaries),  "#38bdf8")
-_stat(c2, "總回報數（所有格網）", total_reports,       "#a78bfa")
-_stat(c3, "高風險格網",           high_grids,          "#f87171")
-_stat(c4, "疑似待協助人數",       total_ppl,           "#fbbf24")
+_stat(c1, "H3 格網數 (含聚合)",  len(h3_summaries),  "blue")
+_stat(c2, "總回報數（所有格網）", total_reports,       "purple")
+_stat(c3, "高風險格網",           high_grids,          "red")
+_stat(c4, "疑似待協助人數",       total_ppl,           "yellow")
 
 st.markdown("<hr>", unsafe_allow_html=True)
 st.caption("💡 滑鼠滾輪縮放地圖 → 自動切換 H3 解析度　｜　右上角按鈕可篩選優先級　｜　懸停格網查看詳情")

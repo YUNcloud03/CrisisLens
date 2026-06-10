@@ -3,6 +3,17 @@
 -- 5 張表：reports / events / grid_summary / model_runs / admin_corrections
 -- =============================================================
 
+-- ── Users / Permissions ─────────────────────────────────────
+CREATE TABLE IF NOT EXISTS users (
+    user_id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    username                TEXT NOT NULL UNIQUE,
+    password_hash           TEXT NOT NULL,
+    role                    TEXT NOT NULL DEFAULT 'user',
+    permission_status       TEXT NOT NULL DEFAULT 'none',
+    created_at              TEXT NOT NULL,
+    updated_at              TEXT NOT NULL
+);
+
 -- ── Reports ───────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS reports (
     report_id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -170,6 +181,34 @@ CREATE TABLE IF NOT EXISTS model_runs (
 
     report_id                   INTEGER,        -- 事後回填
     notes                       TEXT
+);
+
+-- ── Admin Action Log ─────────────────────────────────────────
+-- 記錄每一筆管理員操作（狀態變更、審核、優先級覆寫等）
+CREATE TABLE IF NOT EXISTS admin_action_logs (
+    log_id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    logged_at   TEXT    NOT NULL,
+    admin_user  TEXT    NOT NULL,
+    action      TEXT    NOT NULL,   -- 'status_change' | 'permission_approve' | 'priority_override' | ...
+    target_type TEXT,               -- 'event' | 'report' | 'user'
+    target_id   INTEGER,            -- event_id / report_id / user_id
+    old_value   TEXT,               -- 變更前的值
+    new_value   TEXT,               -- 變更後的值
+    reason      TEXT,               -- 選填：操作原因
+    extra       TEXT                -- JSON 額外資訊
+);
+
+-- ── Error Log ─────────────────────────────────────────────────
+-- 持久化系統錯誤（模型推論失敗、API 逾時、DB 例外等）
+CREATE TABLE IF NOT EXISTS error_logs (
+    log_id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    logged_at   TEXT    NOT NULL,
+    level       TEXT    NOT NULL DEFAULT 'ERROR',  -- 'WARNING' | 'ERROR' | 'CRITICAL'
+    context     TEXT,       -- 'clip_classify' | 'geocoding' | 'rag_generate' | 'submit_report' | ...
+    message     TEXT    NOT NULL,
+    traceback   TEXT,       -- 完整 traceback（若有）
+    username    TEXT,       -- 觸發動作的使用者（若有）
+    extra       TEXT        -- JSON 額外資訊
 );
 
 -- ── Admin Corrections ─────────────────────────────────────────

@@ -179,6 +179,14 @@ def _build_report(raw: dict, now: datetime) -> dict:
         "model_run_id":              None,
         "aggregation_rule_version":  "h3-district-city-fallback-v2",
         "priority_rule_version":     "severity-weighted-v1",
+        # Safety Guard 預設值（seed 資料視為已審核安全）
+        "input_safety_label":        "safe",
+        "output_safety_label":       "safe",
+        "safety_reason":             None,
+        # 提交者
+        "submitted_by":              "seed",
+        # 額外狀態欄位
+        "power_outage":              int(raw.get("power_outage", 0)),
     }
 
 
