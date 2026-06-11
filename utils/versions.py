@@ -6,9 +6,11 @@ MLOps 版本常數。
 
 # ── 模型版本 ──────────────────────────────────────────────────
 CLIP_MODEL_VERSION       = "clip-vitl14-v1"
-CLIP_PROMPT_VERSION      = "multi-prompt-avg-v1"      # classify_multi_prompt 多描述平均
+CLIP_PROMPT_VERSION      = "multi-prompt-avg-5class-v2"  # classify_multi_prompt 多描述平均（5 類）
 
-CNN_MODEL_VERSION        = "custom-cnn-medic-6class-v1"
+EFFNET_MODEL_VERSION     = "efficientnet-b0-medic-5class-v2"  # 雙主投票第二主（test macro-F1 0.8375）
+
+CNN_MODEL_VERSION        = "custom-cnn-medic-5class-v2"  # legacy：舊自訓 CNN，已從 app 投票淘汰
 
 RAG_INDEX_VERSION        = "faiss-multilingual-minilm-v1"
 RAG_PROMPT_VERSION       = "gemini-flash-rag-v1"

@@ -76,7 +76,7 @@ with tab1:
             for v in clip_versions:
                 st.code(v, language=None)
         with vc2:
-            st.markdown("**ResNet/CNN 版本**")
+            st.markdown("**第二主模型版本（EfficientNet / 舊 ResNet・CNN）**")
             for v in resnet_versions:
                 st.code(v, language=None)
         with vc3:
@@ -101,7 +101,7 @@ with tab1:
                 f'<span style="color:#475569;min-width:120px">{t}</span>'
                 f'<span style="color:#94a3b8">Run <strong>#{run["run_id"]}</strong> → Report #{rid}</span>'
                 f'<span style="color:#38bdf8">CLIP: {cv}</span>'
-                f'<span style="color:#a78bfa">ResNet: {rv}</span>'
+                f'<span style="color:#a78bfa">2nd: {rv}</span>'
                 f'<span style="color:#4ade80">Agg: {av}</span>'
                 f'<span style="color:#fb923c">Priority: {pv}</span>'
                 f'</div>',
