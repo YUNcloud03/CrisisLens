@@ -1,30 +1,26 @@
 # CrisisLens 🔍
 
-> **災情圖文分類與應變建議系統**
-> 上傳一張災情照片，系統自動辨識災害類型、彙整為事件、產生應變建議，並在 H3 地理網格上呈現災情熱度。
+> **災情圖文分類與應變建議系統 v2.0**  
+> 上傳一張災情照片，AI 自動辨識災害類型、產生防災建議，並將回報聚合為事件、在 H3 地圖上展示災情熱度。
 >
-> CLIP Zero-Shot ＋ ResNet50 Baseline ＋ RAG (FAISS + Gemini) ＋ H3 地理聚合
+> **CLIP ViT-L/14（zero-shot）+ ResNet50 Linear Probe（fine-tuned on MEDIC）+ DisasterCNN_v1（自訓 CNN）+ RAG（FAISS + Gemini）+ H3 地理聚合**
 
 ---
 
 ## 目錄
 
 - [專案特色](#專案特色)
-- [系統架構](#系統架構)
-- [專案結構](#專案結構)
-- [快速開始](#快速開始)
+- [快速開始（本機 SQLite 模式）](#快速開始本機-sqlite-模式)
+- [模型權重下載](#模型權重下載)
+- [種子資料](#種子資料)
 - [環境變數](#環境變數)
 - [使用流程](#使用流程)
-- [災害類別與 Prompt Set](#災害類別與-prompt-set)
-- [模型說明](#模型說明)
-- [RAG 應變建議](#rag-應變建議)
-- [資料聚合與評分](#資料聚合與評分)
-- [資料庫結構](#資料庫結構)
-- [ResNet50 訓練](#resnet50-訓練)
+- [Docker 本機測試](#docker-本機測試)
+- [Azure 部署](#azure-部署)
+- [專案結構](#專案結構)
 - [MLOps 版本管理](#mlops-版本管理)
 - [AI Safety 聲明](#ai-safety-聲明)
 - [常見問題](#常見問題)
-- [授權](#授權)
 
 ---
 
@@ -32,65 +28,186 @@
 
 | 功能模組 | 說明 |
 |---|---|
-| **雙模型分類** | CLIP ViT-B/32（zero-shot，免訓練）＋ ResNet50 Linear Probe（baseline / 對照組） |
-| **可切換 Prompt Set** | A 簡短版、B 完整句版、C 社群情境版三組 prompt，可即時比較效果 |
-| **RAG 應變建議** | FAISS 向量檢索 6 份防災 SOP 文件 → Gemini 2.0 Flash 生成建議；無 API key 時自動 fallback 至內建指引 |
-| **H3 多層次聚合** | 街區（res 9）→ 行政區 → 縣市 三層 fallback，所有回報都能進熱圖 |
-| **事件自動聚合** | 同類型 + 同 H3 cell（或鄰近）+ 2 小時內 → 自動歸併為同一事件 |
-| **嚴重度評分** | 受傷／受困／道路阻斷／求助人數 → Report 0–100 分；事件再依回報數加權成 Priority |
-| **MLOps 版號追蹤** | 每次推論寫入 `model_runs`，記錄 CLIP/ResNet/RAG/規則的版本，便於追溯與重訓 |
-| **管理員校正** | `admin_corrections` 表記錄人工修正，可作為未來 retraining 的標註資料 |
-| **AI Safety** | 系統明示為「初步參考」，提醒撥打 119/110，不取代官方判定 |
+| **CLIP ViT-L/14 零樣本分類** | 多描述投票（每類 4–7 prompts）+ 100× temperature scaling → 6 類高信心分類 |
+| **ResNet50 Linear Probe** | ImageNet ResNet50 backbone + Linear head，fine-tuned on QCRI/MEDIC 5 classes（90MB weights） |
+| **DisasterCNN_v1 輔助驗證** | 自訓 4-block CNN（QCRI/MEDIC，val_acc=68.57%）交叉確認，不一致時觸發人工審查 |
+| **model_agreement + need_review** | 雙模型標籤一致性比對；信心度 < 50% 或 Top-2 gap < 15% 或模型不一致 → 待審核旗標 |
+| **RAG 防災建議** | FAISS 檢索 6 份防災 SOP → Gemini 2.0 Flash 生成；無 API key 自動 fallback |
+| **事件自動聚合 v4** | 依災害類型分組 + 地點距離 + 各類型時間窗口（6–48 hr）聚合 |
+| **H3 多層次熱區圖** | 縣市（res 5）→ 鄉鎮（res 7）→ 街區（res 9）動態縮放，支援過濾 resolved 事件 |
+| **三維 Priority Score** | Severity × 0.50 + Vulnerability × 0.30 + Credibility × 0.20 |
+| **事件狀態管理** | pending_review / active / resolved / archived + Admin Action Log |
+| **MLOps 版號追蹤** | 每次推論寫入 `model_runs`，支援 retraining 資料追溯 |
+| **PostgreSQL / SQLite 雙模式** | 本機用 SQLite，Azure 部署設定 `DATABASE_URL` 自動切換 |
+| **Azure Blob Storage** | 設定 `AZURE_STORAGE_CONNECTION_STRING` 啟用，未設定則存本機 |
 
 ---
 
-## 系統架構
+## 快速開始（本機 SQLite 模式）
 
-```mermaid
-flowchart TB
-    subgraph UI["Streamlit Frontend"]
-        A1["app.py<br/>單張分類"]
-        A2["1_Submit_Report<br/>災情回報"]
-        A3["2_Event_Dashboard<br/>事件列表"]
-        A4["3_Event_Detail<br/>事件詳細"]
-        A5["4_H3_Heatmap<br/>H3 熱圖"]
-    end
+### 前置需求
 
-    subgraph Logic["Inference & Aggregation Layer"]
-        M["models/<br/>・CLIP<br/>・ResNet50"]
-        R["rag/<br/>・retriever<br/>・generator"]
-        G["aggregation/<br/>・event_matcher<br/>・h3_utils<br/>・scoring<br/>・distance"]
-    end
+- **Python 3.10 / 3.11**（建議 3.11）
+- **Git**
+- **磁碟空間**：約 2GB（CLIP ViT-L/14 快取 ~900MB + 套件）
 
-    subgraph Storage["Data & External Services"]
-        W["CLIP weights<br/>ResNet *.pth"]
-        F["FAISS index<br/>rag_docs/*.md"]
-        K["Gemini API<br/>(google-generativeai)"]
-        D[("crisislens.db<br/>SQLite + WAL")]
-    end
+### 安裝步驟
 
-    A1 --> M
-    A1 --> R
-    A2 --> M
-    A2 --> R
-    A2 --> G
-    A3 --> G
-    A4 --> G
-    A5 --> G
+```bash
+# 1. 取得專案
+git clone <your-repo-url>
+cd crisislens
 
-    M --> W
-    R --> F
-    R --> K
-    G --> D
-    M --> D
-    R --> D
+# 2. 建立虛擬環境
+python -m venv venv
 
-    classDef ui fill:#0d1628,stroke:#38bdf8,color:#e2e8f0
-    classDef logic fill:#0a1220,stroke:#0284c7,color:#e2e8f0
-    classDef store fill:#1a0f28,stroke:#a855f7,color:#e2e8f0
-    class A1,A2,A3,A4,A5 ui
-    class M,R,G logic
-    class W,F,K,D store
+# Windows
+venv\Scripts\activate
+# macOS / Linux
+source venv/bin/activate
+
+# 3. 安裝套件（PyTorch CPU-only，大幅縮小安裝量）
+pip install torch==2.2.0+cpu torchvision==0.17.0+cpu \
+  --index-url https://download.pytorch.org/whl/cpu
+pip install -r requirements.txt
+
+# 4. 設定環境變數
+cp .env.example .env
+# 編輯 .env，至少填入 GEMINI_API_KEY（選填，未填使用內建指引）
+
+# 5. 建立 FAISS 向量索引
+python rag/build_index.py
+
+# 6. （選填）匯入測試種子資料
+python seed.py --reset
+
+# 7. 啟動
+streamlit run app.py
+```
+
+預設網址：<http://localhost:8501>  
+管理員帳號請透過部署環境變數或初始化腳本建立；不要在前端或公開文件顯示預設密碼。
+
+---
+
+## 模型權重下載
+
+### CLIP ViT-L/14
+
+首次推論時**自動下載**，無需手動操作。  
+快取路徑：`~/.cache/clip/ViT-L-14.pt`（約 900MB）
+
+### ResNet50 Linear Probe
+
+需手動放置到 `models/resnet50_linear.pth`（約 90MB）。
+
+```bash
+# 從組員共用雲端下載後放到 models/
+ls models/resnet50_linear.pth   # 確認存在（90MB）
+```
+
+> 若缺少此檔案，系統仍可正常運作，ResNet50 選項在 Sidebar 顯示但推論結果不可用。  
+> 訓練指令：`python models/train_resnet.py`（需先準備 QCRI/MEDIC 資料集）
+
+### DisasterCNN_v1
+
+需手動放置到 `models/custom_cnn.pth`（約 1.5MB）。
+
+```bash
+# 訓練（使用 QCRI/MEDIC 資料集）後取得 custom_cnn.pth
+# 或從組員共用雲端下載後放到 models/
+ls models/custom_cnn.pth   # 確認存在
+```
+
+> 若缺少此檔案，系統仍可正常運作，僅 CLIP 模式有效，CNN 輔助驗證功能停用。
+> 系統啟動時側邊欄會顯示 CNN 狀態。
+
+---
+
+## 種子資料
+
+```bash
+# 寫入 10 筆固定測試回報（重複執行安全）
+python seed.py
+
+# 清空 reports / events / grid_summary 後重新寫入
+python seed.py --reset
+```
+
+> 不影響 `users`、`model_runs`、`admin_corrections` 等表。
+
+---
+
+## 環境變數
+
+複製 `.env.example` 為 `.env` 後填入：
+
+| 變數 | 必填 | 說明 |
+|------|------|------|
+| `GEMINI_API_KEY` | 否 | 未填時 RAG 使用內建指引（功能仍可用）；亦用於 ShieldGemma Layer 2 |
+| `USE_LOCAL_SHIELDGEMMA` | 否 | 設為 `true` 啟用本地 ShieldGemma 3B（需約 2GB VRAM）|
+| `DATABASE_URL` | 否（本機）| PostgreSQL 連線字串，未填使用 SQLite |
+| `AZURE_STORAGE_CONNECTION_STRING` | 否 | 未填時圖片存 `uploads/reports/` |
+| `AZURE_STORAGE_CONTAINER` | 否 | 預設 `crisislens-uploads` |
+
+---
+
+## 使用流程
+
+### 民眾端
+
+1. 登入或註冊帳號
+2. 上傳災情照片（JPG / PNG / WEBP）
+3. 選擇定位方式（瀏覽器 GPS / 手動座標 / 行政區）
+4. 點擊「AI 辨識並產生建議」→ 右側出現辨識結果 + 防災建議
+5. 確認後點擊「送出災情回報」
+
+> GPS 失敗或未填座標時，仍可用行政區送出回報，不影響事件聚合統計。
+
+### 管理端
+
+1. Admin 帳號登入後自動跳轉到 Event Dashboard
+2. 依災害類型、縣市、優先級、狀態篩選事件
+3. 點選事件卡片進入詳細頁，可查看所有回報照片與地圖
+4. 在 H3 熱圖頁觀察全台災情分布
+5. 在權限審核頁批准 / 拒絕使用者的 admin 申請
+
+---
+
+## Docker 本機測試
+
+```bash
+# 建置（包含 CPU-only PyTorch）
+docker build -t crisislens:local .
+
+# 執行（本機 SQLite + 圖片存容器內）
+docker run -p 8501:8501 \
+  -e GEMINI_API_KEY=你的key \
+  crisislens:local
+
+# 執行（掛載本機 DB + uploads）
+docker run -p 8501:8501 \
+  -v "$(pwd)/crisislens.db:/app/crisislens.db" \
+  -v "$(pwd)/uploads:/app/uploads" \
+  -e GEMINI_API_KEY=你的key \
+  crisislens:local
+```
+
+---
+
+## Azure 部署
+
+詳細步驟請參閱 [docs/deployment_azure.md](docs/deployment_azure.md)。
+
+**一句話摘要**：
+```bash
+# 建置並推送映像
+docker build -t crisislensacr.azurecr.io/crisislens:latest .
+docker push crisislensacr.azurecr.io/crisislens:latest
+
+# 更新 Container App
+az containerapp update --name crisislens --resource-group crisislens-rg \
+  --image crisislensacr.azurecr.io/crisislens:latest
 ```
 
 ---
@@ -98,452 +215,152 @@ flowchart TB
 ## 專案結構
 
 ```
-CrisisLens/
-├── app.py                     # 主頁：單張照片分類 + 即時 RAG 建議
-├── seed.py                    # 寫入固定測試資料（供組員共用）
-├── crisislens.db              # SQLite 資料庫（已隨專案附上初始資料）
+crisislens/
+├── app.py                      # 主頁：民眾端（災情回報 + AI 辨識）
+├── startup.sh                  # Docker / Azure 啟動腳本
+├── Dockerfile
 ├── requirements.txt
 ├── .env.example
-├── .gitignore
+├── seed.py                     # 測試種子資料
 │
-├── pages/                     # Streamlit 多頁面（自動掃描）
-│   ├── 1_Submit_Report.py     # 災情回報（含 GPS／手動座標／行政區）
-│   ├── 2_Event_Dashboard.py   # 事件列表（多條件篩選）
-│   ├── 3_Event_Detail.py      # 事件詳細頁
-│   └── 4_H3_Heatmap.py        # H3 多尺度災情熱圖
+├── pages/
+│   ├── 2_Event_Dashboard.py    # 管理端：事件列表（含 need_review 過濾）
+│   ├── 3_Event_Detail.py       # 管理端：事件詳細（含 Admin Corrections）
+│   ├── 4_H3_Heatmap.py         # 管理端：H3 熱區地圖
+│   ├── 5_Permission_Review.py  # 管理端：使用者權限審核
+│   └── 6_MLOps.py              # 管理端：MLOps 監控（版本記錄 / 修正 / 待審核）
 │
-├── models/                    # 影像分類模型
-│   ├── clip_classifier.py     # CLIP ViT-B/32 zero-shot
-│   ├── resnet_baseline.py     # ResNet50 Linear Probe 推論
-│   └── train_resnet.py        # ResNet50 訓練腳本
+├── models/
+│   ├── clip_classifier.py      # CLIP ViT-L/14 推論（multi-prompt averaging）
+│   ├── resnet_baseline.py      # ResNet50 Linear Probe 推論（5-class fine-tuned on MEDIC）
+│   ├── resnet50_linear.pth     # ResNet50 weights（90MB，需手動下載）
+│   ├── resnet50_linear_classes.json  # 5-class label mapping
+│   ├── train_resnet.py         # ResNet50 fine-tuning 訓練腳本
+│   ├── custom_cnn_classifier.py # DisasterCNN_v1 推論包裝
+│   └── custom_cnn_model.py     # DisasterCNN_v1 架構定義（與訓練筆記本同步）
 │
-├── rag/                       # 檢索增強生成
-│   ├── build_index.py         # 建立 FAISS index
-│   ├── retriever.py           # 向量檢索
-│   ├── generator.py           # Gemini 生成 + fallback
-│   ├── prompts.py             # System / User Prompt 模板
-│   └── faiss_index.bin        # 已建好的索引（隨專案附上）
+├── rag/
+│   ├── build_index.py          # 建立 FAISS 索引
+│   ├── retriever.py            # 向量檢索
+│   └── generator.py            # Gemini 生成 + fallback
 │
-├── rag_docs/                  # 防災 SOP 文件（向量化來源）
-│   ├── earthquake_sop.md
-│   ├── flood_sop.md
-│   ├── fire_sop.md
-│   ├── typhoon_sop.md
-│   ├── landslide_sop.md
-│   └── emergency_guideline.md
+├── rag_docs/                   # 6 份防災 SOP 文件（Traditional Chinese）
 │
-├── aggregation/               # 事件聚合 & 評分
-│   ├── h3_utils.py            # H3 網格工具（res 5–9 多尺度）
-│   ├── distance.py            # Haversine 距離
-│   ├── event_matcher.py       # 同類型 + 同 cell + 2hr → 同事件
-│   └── scoring.py             # Report / Event 嚴重度評分
+├── aggregation/
+│   ├── event_matcher.py        # 事件聚合（v4：類型+地點+時間窗口）
+│   ├── h3_utils.py             # H3 網格工具
+│   ├── scoring.py              # Report / Event / Priority 評分
+│   └── distance.py             # Haversine 距離
 │
-├── db/                        # 資料層
-│   ├── schema.sql             # 5 張表 schema
-│   ├── database.py            # 連線 / init / 遷移
-│   └── queries.py             # CRUD 查詢
+├── db/
+│   ├── schema.sql              # SQLite schema（含 admin_action_logs, error_logs）
+│   ├── schema_pg.sql           # PostgreSQL schema
+│   ├── database.py             # 雙模式連線（SQLite / PostgreSQL）
+│   └── queries.py              # CRUD 查詢（含 RETURNING）
 │
 ├── utils/
-│   ├── config.py              # 類別、Prompt Set、模型路徑、超參數
-│   ├── versions.py            # MLOps 版本常數（每次模型更新時遞增）
-│   ├── image_utils.py
-│   ├── ui_theme.py            # 共用深色主題
-│   └── metrics.py
+│   ├── config.py               # 類別、Prompt Set
+│   ├── versions.py             # MLOps 版本常數
+│   ├── storage.py              # 圖片儲存（Azure Blob / 本機）
+│   ├── geocoding.py            # Nominatim 反向地理編碼（LRU cache）
+│   ├── logger.py               # 錯誤日誌（SQLite handler）
+│   ├── auth.py                 # 登入 / 登出 / 權限
+│   ├── ui_theme.py             # 深色主題 CSS + 共用元件
+│   └── image_utils.py
 │
-└── outputs/
-    └── resnet_training_curve.png
+└── docs/
+    ├── data_card.md            # MLSecOps Workshop 1 資料卡
+    ├── model_card.md           # MLSecOps Workshop 1 模型卡
+    ├── system_card.md          # 系統總覽（流程、聚合規則、安全）
+    └── deployment_azure.md     # Azure 部署完整指南
 ```
-
----
-
-## 快速開始
-
-### 1. 環境需求
-
-- **Python 3.10+**（建議 3.10 / 3.11，FAISS / sentence-transformers 相容性最佳）
-- **OS**：Windows / macOS / Linux 皆可
-- **GPU**：非必要。有 CUDA 會自動使用，無 GPU 也能在 CPU 跑（CLIP 推論單張約 1–3 秒）
-- **磁碟**：模型檔案＋向量索引約 1.5 GB
-
-### 2. 安裝步驟
-
-```bash
-# 1. 取得專案
-git clone <your-repo-url>
-cd CrisisLens
-
-# 2. 建立虛擬環境
-python -m venv venv
-# Windows
-venv\Scripts\activate
-# macOS / Linux
-source venv/bin/activate
-
-# 3. 安裝套件
-pip install -r requirements.txt
-
-# 4. 設定 API Key（選填，未填則 fallback 至內建建議）
-cp .env.example .env
-# 編輯 .env，填入 GEMINI_API_KEY
-
-# 5. 建立 FAISS 向量索引（首次必要 / 防災文件有變動時重建）
-python rag/build_index.py
-
-# 6.（可選）寫入固定測試資料
-python seed.py --reset
-
-# 7. 啟動 Streamlit
-streamlit run app.py
-```
-
-預設網址：<http://localhost:8501>
-
----
-
-## 環境變數
-
-`.env` 檔案（複製自 [.env.example](.env.example)）：
-
-| 變數 | 必填 | 說明 |
-|---|---|---|
-| `GEMINI_API_KEY` | 否 | Google Gemini API key，未填寫會自動 fallback 至 [rag/prompts.py](rag/prompts.py) 的 `FALLBACK_ADVICE`。取得：<https://aistudio.google.com/> |
-
----
-
-## 使用流程
-
-### 流程 A：單張照片快速分類（[app.py](app.py)）
-
-1. 側邊欄選擇模型模式（CLIP / ResNet50 / 兩者比較）
-2. 上傳災情照片（JPG / PNG / WEBP）
-3. 點擊「🚀 開始分析」
-4. 系統輸出：
-   - **Top-1 分類**（中文標籤、信心度進度條）
-   - **Top-3 候選類別**
-   - **RAG 應變建議**（標示來源：📚 RAG 檢索 / ✨ Gemini LLM / 📋 內建指引）
-
-### 流程 B：完整災情回報（[pages/1_Submit_Report.py](pages/1_Submit_Report.py)）
-
-1. **取得位置**：
-   - 🛰️ 手動輸入 GPS 座標
-   - 🗺️ 輸入縣市 + 行政區
-   - 📡 自動偵測（瀏覽器 GPS，需安裝 `streamlit-js-eval`）
-2. **上傳照片** + 補充描述
-3. **填寫災情資訊**：是否有人受困／受傷、道路是否阻斷、人數估計
-4. 系統自動：
-   - CLIP 推論（信心度 < 0.5 標記 `need_review`）
-   - 計算 `report_severity_score`
-   - 透過 H3 cell（或縣市行政區）尋找候選事件
-   - 同類型 + 2 小時內 → 聚合進現有事件；否則新建事件
-   - 重算 `event_priority_score` 與 `grid_summary`
-   - 寫入 `model_runs`（含所有版號）
-5. 即時呈現 RAG 應變建議
-
-### 流程 C：事件管理（[pages/2_Event_Dashboard.py](pages/2_Event_Dashboard.py) / [3_Event_Detail.py](pages/3_Event_Detail.py)）
-
-- 多條件篩選：災害類型 / 縣市 / 優先級 / 狀態
-- 點擊事件 → 進入詳細頁：所有 reports 縮圖、地圖、可信度評等
-- 狀態切換：`pending_review` → `verified` → `closed`
-
-### 流程 D：地理熱圖（[pages/4_H3_Heatmap.py](pages/4_H3_Heatmap.py)）
-
-- pydeck 渲染六邊形格網
-- 隨地圖縮放等級切換 H3 解析度（5 縣市 → 9 街區）
-- 顏色深度對應 `max_priority_score`
-- 點擊 cell 顯示主要災害類型、回報數、最近時間
-
----
-
-## 災害類別與 Prompt Set
-
-### 中英對照（[utils/config.py](utils/config.py)）
-
-| 英文 (CLIP 輸出) | 中文 (顯示用) |
-|---|---|
-| Earthquake Damage | 地震或建築損壞 |
-| Flood | 淹水 |
-| Fire | 火災 |
-| Typhoon or Storm Damage | 颱風或強風災損 |
-| Landslide | 土石流或坍方 |
-| Other or No Disaster | 其他或無明顯災害 |
-
-### 三組 Prompt Set
-
-| Set | 風格 | 範例 |
-|---|---|---|
-| **A 簡短版** | 單字標籤 | `"flood"` |
-| **B 完整句版**（預設） | 自然語句 | `"a photo of a flooded street after heavy rain"` |
-| **C 社群情境版** | 模擬社群貼文 | `"a social media photo showing flood damage after heavy rainfall"` |
-
-> Prompt Set 切換不需重新載入模型，可現場比較對同一張照片的辨識差異。
-
----
-
-## 模型說明
-
-### CLIP ViT-B/32（主分類器）
-
-- 來源：OpenAI [openai/CLIP](https://github.com/openai/CLIP)
-- **Zero-shot**：不需訓練，靠 prompt 與圖片做相似度比對
-- 推論流程：
-  1. 圖片過 image encoder → image features
-  2. 6 個類別 prompt 過 text encoder → text features
-  3. cosine similarity → softmax → 取 Top-3
-- 信心度 < `CLIP_LOW_CONF_THRESHOLD`（預設 0.5）會標記 `need_review = 1`
-
-### ResNet50 Linear Probe（baseline）
-
-- ImageNet 預訓練 backbone 凍結，只訓練最後一層 `nn.Linear`
-- 用於與 CLIP 對照，量化 zero-shot 的競爭力
-- 權重檔 `models/resnet50_linear.pth` **未提交至 git**（檔案大），需自行訓練（見[下方訓練章節](#resnet50-訓練)）
-- 若權重不存在，仍可載入隨機初始化模型（會在 UI 標示 ⚠️ 未訓練）
-
----
-
-## RAG 應變建議
-
-### 流程（[rag/generator.py](rag/generator.py)）
-
-```mermaid
-flowchart TD
-    Q["災害類型 + 描述 + 地點"] --> Build["組成 Query"]
-    Build --> Retrieve["FAISS 向量檢索<br/>Top-K = 4"]
-    Idx[("rag/faiss_index.bin")] -.讀取.-> Retrieve
-    Retrieve --> Check{"有 GEMINI_API_KEY<br/>且有檢索到文件？"}
-    Check -- 是 --> LLM["Gemini 2.0 Flash 生成"]
-    LLM --> Parse["解析成條列建議<br/>used_llm = True"]
-    Check -- 否 --> FB["FALLBACK_ADVICE<br/>內建 dict<br/>used_llm = False"]
-    Parse --> Out["回傳<br/>{ advice, sources,<br/>  used_rag, used_llm }"]
-    FB --> Out
-
-    classDef io fill:#0d1628,stroke:#38bdf8,color:#e2e8f0
-    classDef proc fill:#0a1220,stroke:#0284c7,color:#e2e8f0
-    classDef decision fill:#1a0f28,stroke:#fbbf24,color:#e2e8f0
-    classDef store fill:#0d1f0d,stroke:#4ade80,color:#e2e8f0
-    class Q,Out io
-    class Build,Retrieve,LLM,Parse,FB proc
-    class Check decision
-    class Idx store
-```
-
-### 向量模型
-
-- Embedding：`paraphrase-multilingual-MiniLM-L12-v2`（支援中文）
-- 索引：FAISS `IndexFlatL2`
-- 切塊：固定 400 字元、overlap 80 字元
-- Top-K：4
-
-### SOP 文件來源
-
-[rag_docs/](rag_docs/) 共 6 份 Markdown：
-- `earthquake_sop.md`、`flood_sop.md`、`fire_sop.md`、`typhoon_sop.md`、`landslide_sop.md`
-- `emergency_guideline.md`（通用緊急應變）
-
-> 修改 SOP 文件後請重跑 `python rag/build_index.py`，並依約定遞增 [`RAG_INDEX_VERSION`](utils/versions.py)。
-
----
-
-## 資料聚合與評分
-
-### 事件聚合規則（[aggregation/event_matcher.py](aggregation/event_matcher.py)）
-
-兩筆 report 被歸併為同一事件，需同時滿足：
-
-1. **災害類型相同**
-2. **時間相近**：`upload_time` 間隔 ≤ `TIME_WINDOW_HOURS`（2 小時）
-3. **位置相近**（任一條件成立）：
-   - H3 cell 相同或相鄰（res 9，街區約 174m）
-   - 或 Haversine 距離 ≤ `GEO_THRESHOLD_M`（300 公尺）
-   - 或同 city + district（無 GPS 時的 fallback）
-
-```mermaid
-flowchart TD
-    New["新進 Report<br/>(disaster_type, lat/lng, city, district, upload_time)"]
-    New --> Cands["撈出候選事件<br/>(同 disaster_type<br/> + 2 小時內)"]
-    Cands --> HasGPS{"Report 有 GPS？"}
-
-    HasGPS -- 是 --> H3Check{"H3 cell 相同或相鄰？<br/>(res 9 街區)"}
-    H3Check -- 是 --> Merge["歸併進該事件"]
-    H3Check -- 否 --> DistCheck{"Haversine 距離<br/>≤ 300m？"}
-    DistCheck -- 是 --> Merge
-    DistCheck -- 否 --> NewEvt["建立新事件"]
-
-    HasGPS -- 否 --> CityCheck{"同 city + district？"}
-    CityCheck -- 是 --> Merge
-    CityCheck -- 否 --> NewEvt
-
-    Merge --> Recalc["重算 event_priority<br/>＋ 更新 grid_summary"]
-    NewEvt --> Recalc
-
-    classDef io fill:#0d1628,stroke:#38bdf8,color:#e2e8f0
-    classDef proc fill:#0a1220,stroke:#0284c7,color:#e2e8f0
-    classDef decision fill:#1a0f28,stroke:#fbbf24,color:#e2e8f0
-    classDef result fill:#0d1f0d,stroke:#4ade80,color:#e2e8f0
-    class New io
-    class Cands,Recalc proc
-    class HasGPS,H3Check,DistCheck,CityCheck decision
-    class Merge,NewEvt result
-```
-
-### Grid Summary（三層 fallback）
-
-| `grid_type` | `grid_id` 組成 | 用途 |
-|---|---|---|
-| `h3` | h3 cell（res 9） | 有 GPS 的報案，可進熱圖 |
-| `district` | `"{city}_{district}"` | 只填行政區的報案 |
-| `city` | `"{city}"` | 連行政區都沒有的最後 fallback |
-
-→ **所有報案都能進入熱圖統計**，不會因缺 GPS 而遺失。
-
-### 嚴重度評分（[aggregation/scoring.py](aggregation/scoring.py)）
-
-**Report 0–100 分**：
-
-| 條件 | 加分 |
-|---|---|
-| 有人受傷 | +30 |
-| 有人受困 | +30 |
-| 道路阻斷 | +20 |
-| 求救標記 | +10 |
-| 報案人數 1–5 / ≥6 | +10 / +20 |
-| 災害屬高風險類型 | +15 |
-| CLIP 信心度 ≥ 0.8 | +5 |
-
-| 級距 | Level |
-|---|---|
-| ≥ 70 | **High** 🔴 |
-| 40–69 | **Medium** 🟡 |
-| 0–39 | **Low** 🟢 |
-
-**Event Priority** 進一步以「最大 report 嚴重度 × 60% + 回報數量加權 + 待協助人數 + 受困/受傷/阻斷標誌」計算（同 0–100 級距）。
-
----
-
-## 資料庫結構
-
-SQLite 檔：`crisislens.db`（已隨專案附上初始資料，可用 [DB Browser for SQLite](https://sqlitebrowser.org/) 開啟瀏覽）
-
-詳細欄位定義見 [db/schema.sql](db/schema.sql)。共 5 張主要表：
-
-| 表 | 用途 |
-|---|---|
-| `reports` | 每筆原始回報（圖片路徑、位置、CLIP/ResNet 預測、嚴重度…） |
-| `events` | 聚合後的事件（含 priority、credibility、status） |
-| `grid_summary` | 三種 grid_type 的網格統計（熱圖讀這張） |
-| `model_runs` | 每次推論的版號快照（MLOps 追蹤） |
-| `admin_corrections` | 人工修正紀錄（可用作 retraining 標註） |
-
-另保留 `h3_grid_summary` 表作為舊版向下相容（不再寫入）。
-
----
-
-## ResNet50 訓練
-
-### 準備資料
-
-預期目錄結構（**不會上傳 git**，請放本機或共享雲端）：
-
-```
-data/crisis_images/
-├── Damaged_Infrastructure/    → 地震或建築損壞
-├── Fire_Disaster/             → 火災
-├── Land_Disaster/             → 土石流或坍方
-├── Water_Disaster/            → 淹水
-└── Non_Damage/                → 其他或無明顯災害
-```
-
-### 執行訓練
-
-```bash
-python models/train_resnet.py
-```
-
-預設超參數（[utils/config.py](utils/config.py)）：
-
-| 參數 | 值 |
-|---|---|
-| `BATCH_SIZE` | 32 |
-| `LEARNING_RATE` | 1e-3 |
-| `EPOCHS` | 5 |
-| 凍結策略 | backbone 全凍結，只訓 `model.fc` |
-| 取樣 | `WeightedRandomSampler`（處理類別不平衡） |
-
-輸出：
-- `models/resnet50_linear.pth`（權重）
-- `models/resnet50_linear_classes.json`（類別對照）
-- `outputs/resnet_training_curve.png`（訓練曲線）
 
 ---
 
 ## MLOps 版本管理
 
-所有版號集中在 [utils/versions.py](utils/versions.py)，**每次更新對應元件時請手動遞增版號**：
+版號統一在 [`utils/versions.py`](utils/versions.py)：
 
 ```python
-CLIP_MODEL_VERSION       = "clip-vitb32-v1"
-CLIP_PROMPT_VERSION      = "B-complete-sentence-v1"
-RESNET_MODEL_VERSION     = "resnet50-linear-probe-v1"
+CLIP_MODEL_VERSION       = "clip-vitl14-v1"
+CLIP_PROMPT_VERSION      = "multi-prompt-avg-v1"
+RESNET_MODEL_VERSION     = "resnet50-linear-probe-medic-5class-v1"
+CNN_MODEL_VERSION        = "custom-cnn-medic-6class-v1"
 RAG_INDEX_VERSION        = "faiss-multilingual-minilm-v1"
 RAG_PROMPT_VERSION       = "gemini-flash-rag-v1"
-AGGREGATION_RULE_VERSION = "h3-district-city-fallback-v2"
-PRIORITY_RULE_VERSION    = "severity-weighted-v1"
+AGGREGATION_RULE_VERSION = "disaster-group-distance-timewindow-v4"
+PRIORITY_RULE_VERSION    = "svcp-weighted-v2"
 ```
 
-每次推論都會把版號寫入 `model_runs` 表，配合 `admin_corrections` 可追蹤：
-- 哪個版本的模型在哪個時間點做了什麼預測
-- 哪些預測被管理員修正過
-- 未來 retraining 時可篩出「特定版本 + 已修正」的資料子集
+每次更新對應元件時手動遞增版號，所有版號都會寫入 `model_runs` 表。
+
+**Retraining 觸發建議**：
+- `need_review` 率 > 30%（連續 100 筆）
+- Model agreement 率 < 60%（7 天窗口）
 
 ---
 
 ## AI Safety 聲明
 
 > ⚠️ **本系統的分類與建議僅供災害資訊整理與初步參考，不代表任何官方災害判定。**
->
-> - 若有人員受困、受傷或有立即危險，請**優先撥打 119、110**，或依政府公告行動。
-> - RAG 應變建議基於系統整理的防災文件，仍需由使用者與管理者自行判斷適用性。
-> - CLIP 信心度 < 0.5 的回報會被標記 `need_review`，待人工確認後才提升 credibility。
 
-UI 已內嵌此提醒，請勿移除（見 [app.py](app.py) 底部 `safety-box`）。
+- 若有人員受困、受傷或有立即危險，請**優先撥打 119、110**
+- CLIP 信心度 < 0.50 或 Top-2 gap < 0.15 的回報標記 `need_review = 1`
+- 模型不一致時（CLIP ≠ CNN）標記 `model_agreement = 0`，一律送人工審查
+- UI 所有推論結果均附加 Safety disclaimer，不可移除
+
+### ShieldGemma 3-層安全防護
+
+每次使用者點擊「AI 辨識並產生建議」時，系統**自動執行三層安全檢查**：
+
+| 層級 | 觸發條件 | 方法 | 說明 |
+|------|----------|------|------|
+| Layer 1 — Keyword 規則 | 永遠執行 | `keyword` | 比對禁用關鍵字清單，零延遲 |
+| Layer 2 — Gemini API | `GEMINI_API_KEY` 設定時 | `gemini` / `gemini_vision` | 語意分析文字描述 + Vision API 檢查圖片 |
+| Layer 3 — ShieldGemma 本地 | `USE_LOCAL_SHIELDGEMMA=true` 時 | `shieldgemma` | google/shieldgemma-2b 本地推論（約 2GB） |
+
+**三個檢查點**：
+1. **文字輸入** — 使用者描述文字（`check_user_input`）
+2. **圖片內容** — 上傳照片（`check_image_safety`，需 Gemini Vision）
+3. **建議輸出** — RAG 生成的防災建議（`check_rag_output`）
+
+**結果 label**：
+- `safe` — 通過，不顯示警告
+- `review` — 觸發敏感詞，標記為需人工審查
+- `sanitize` — 輸出含危險語句，自動替換
+- `block` — 封鎖，中止流程並顯示錯誤
+
+每次分析完成後，右側結果面板的「🛡️ ShieldGemma 3-層安全檢查結果」卡片會顯示三個檢查點的 label 與使用的方法，供使用者確認系統確實執行了安全防護。
+
+啟用本地 ShieldGemma：
+```bash
+# .env
+USE_LOCAL_SHIELDGEMMA=true
+# 首次載入約 2GB，需 CUDA 或 MPS；CPU 推論極慢，不建議生產使用
+```
 
 ---
 
 ## 常見問題
 
-**Q1：第一次跑 `streamlit run app.py` 卡很久？**
-A：CLIP 首次推論需下載 ViT-B/32 權重（約 350 MB），快取到 `~/.cache/clip/`。下載完成後即正常。
+**Q1：CLIP 首次推論很慢？**  
+A：ViT-L/14 首次需下載約 900MB，快取後之後推論正常（約 2–5 秒 / 張，CPU）。
 
-**Q2：FAISS index 不存在的錯誤？**
-A：執行 `python rag/build_index.py` 即可。UI 側邊欄會顯示 ✅/⚠️ 狀態。
+**Q2：FAISS index 錯誤？**  
+A：執行 `python rag/build_index.py`。側邊欄顯示 ✅ 表示就緒。
 
-**Q3：未設定 `GEMINI_API_KEY` 還能用嗎？**
-A：可以，會 fallback 到 [rag/prompts.py](rag/prompts.py) 的 `FALLBACK_ADVICE`，UI 會顯示「📋 內建指引」標籤。
+**Q3：CNN 輔助驗證沒出現？**  
+A：確認 `models/custom_cnn.pth` 存在，且 `CNN_AUX_ENABLED=True`（預設）。
 
-**Q4：資料庫已經有資料，重跑 `seed.py` 會重複嗎？**
-A：預設會「新增」測試資料。用 `python seed.py --reset` 會先清空 `reports / events / grid_summary` 再寫入（不動 `model_runs / admin_corrections`）。
+**Q4：H3 地圖無法顯示？**  
+A：確認已安裝 `h3>=3.7.7`。若缺套件，頁面會顯示安裝提示。
 
-**Q5：Windows 下 `streamlit-js-eval` 安裝失敗？**
-A：此套件僅用於瀏覽器 GPS 自動偵測，缺少時系統會自動隱藏該選項，可手動輸入座標或行政區。
+**Q5：如何切換 PostgreSQL？**  
+A：在 `.env` 填入 `DATABASE_URL=postgresql://...`，重啟 Streamlit。Schema 初始化是冪等的，會自動建表。
 
-**Q6：可以加入新災害類別嗎？**
-A：可以。需同時更新：
-1. [utils/config.py](utils/config.py) 的 `CLASSES_EN / CLASSES_ZH / PROMPT_SETS`
-2. ResNet 重新訓練（類別數會變）
-3. 新增對應 `rag_docs/<new_type>_sop.md` 並重建 FAISS index
-4. 遞增 `CLIP_PROMPT_VERSION` / `RESNET_MODEL_VERSION` / `RAG_INDEX_VERSION`
+**Q6：送出回報後沒看到事件？**  
+A：可能 GPS 和行政區都未填，`grid_id = NULL`，仍有 report 但 grid_summary 未建立。建議至少填入縣市。
 
 ---
 
-## 授權
-
-本專案為學術／教學用途。模型權重、API 服務與防災文件之版權各歸原作者所有：
-
-- CLIP：OpenAI MIT License
-- ResNet50：torchvision pretrained weights
-- sentence-transformers：Apache 2.0
-- Gemini：Google AI Studio Terms of Service
-- 防災 SOP 文件：依各原始政府／機構出處標示來源
-
----
-
-**v1.0** · CLIP + ResNet50 + RAG · 2026
+**v2.0** · CLIP ViT-L/14 + DisasterCNN_v1 + RAG · 2026

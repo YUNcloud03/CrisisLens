@@ -1,22 +1,63 @@
 """CrisisLens — 災情圖文分類與應變建議系統。"""
-# ── 壓制 transformers __path__ 棄用警告（不影響功能）──────────
+# ── 壓制 transformers 棄用警告（不影響功能）────────────────────
+# 必須在任何 import 之前設定環境變數，才能在 transformers 載入時生效
+import os
+os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")      # transformers 自身日誌等級
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")      # 避免 tokenizers fork 警告
+
 import warnings
-warnings.filterwarnings("ignore", message=".*__path__.*")
+# warnings 模組層面：過濾任何含 __path__ 的 UserWarning / FutureWarning
+warnings.filterwarnings("ignore", message=r".*__path__.*")
+warnings.filterwarnings("ignore", message=r".*Accessing.*", module=r"transformers.*")
+warnings.filterwarnings("ignore", category=FutureWarning,    module=r"transformers.*")
+warnings.filterwarnings("ignore", category=UserWarning,      module=r"transformers.*")
 
 import logging
+# logging 模組層面：transformers 的 warning_once() 走 logging，需在此過濾
 logging.getLogger("transformers").setLevel(logging.ERROR)
+logging.getLogger("transformers.modeling_utils").setLevel(logging.ERROR)
 # ─────────────────────────────────────────────────────────────
 
 import streamlit as st
+import streamlit.components.v1 as components
+import json
 import os
 import sys
+import uuid
+from datetime import datetime
+
+try:
+    from streamlit_js_eval import get_geolocation as _get_geo
+    _HAS_GEO = True
+except ImportError:
+    _HAS_GEO = False
 
 sys.path.insert(0, os.path.dirname(__file__))
 
+from aggregation.event_matcher import _derive_grid_id, aggregate
+from aggregation.h3_utils import DEFAULT_RESOLUTION, latlng_to_h3_cell
+from aggregation.scoring import calc_report_severity
+from db.database import init_db
+from db.queries import insert_model_run, insert_report, update_model_run_report, count_recent_reports_by_user
+from utils.auth import require_login
 from utils.image_utils import load_image, resize_for_display
 from utils.config import CLASSES_ZH, PROMPT_SETS, GEMINI_API_KEY
-from utils.ui_theme import apply_theme
+from utils.ui_theme import apply_theme, empty_state, page_header, top_pill
+from utils.versions import (
+    AGGREGATION_RULE_VERSION,
+    CLIP_LOW_CONF_THRESHOLD,
+    CLIP_TOP2_GAP_THRESHOLD,
+    CLIP_MODEL_VERSION,
+    CLIP_PROMPT_VERSION,
+    CNN_MODEL_VERSION,
+    CNN_AUX_ENABLED,
+    PRIORITY_RULE_VERSION,
+    RAG_INDEX_VERSION,
+    RAG_PROMPT_VERSION,
+)
 from rag.retriever import index_exists
+
+init_db()
 
 # ── 頁面設定 ─────────────────────────────────────────────────
 st.set_page_config(
@@ -27,98 +68,16 @@ st.set_page_config(
 )
 
 apply_theme()
+user = require_login()
 
-# ── Dark Theme CSS ────────────────────────────────────────────
-st.markdown("""
-<style>
-html, body,
-[data-testid="stAppViewContainer"],
-[data-testid="stApp"] {
-    background-color: #080d1a !important;
-    color: #e2e8f0 !important;
-}
-[data-testid="stSidebar"] {
-    background-color: #0a1220 !important;
-    border-right: 1px solid rgba(30,64,120,0.45);
-}
-[data-testid="stSidebar"] * { color: #e2e8f0 !important; }
-h1, h2, h3, h4 { color: #e2e8f0 !important; }
+st.session_state.pop("just_logged_in", None)
+if user.get("role") == "admin" and user.get("permission_status") == "approved":
+    st.switch_page("pages/2_Event_Dashboard.py")
 
-.metric-card {
-    background: #0d1628;
-    border: 1px solid rgba(30,64,120,0.45);
-    border-radius: 10px;
-    padding: 16px 20px;
-    margin-bottom: 12px;
-}
-.metric-card:hover { border-color: rgba(56,189,248,0.35); }
+from utils.storage import save_image as _save_image
 
-.score-label { font-size:0.75rem; color:#94a3b8; text-transform:uppercase; letter-spacing:0.07em; }
-.score-value { font-size:2rem; font-weight:800; color:#38bdf8; line-height:1.1; }
-.score-sub   { font-size:0.85rem; color:#94a3b8; margin-top:4px; }
-
-.risk-high   { color:#f87171 !important; }
-.risk-medium { color:#fbbf24 !important; }
-.risk-low    { color:#4ade80 !important; }
-
-.advice-item {
-    background: rgba(56,189,248,0.06);
-    border-left: 3px solid #38bdf8;
-    padding: 8px 12px;
-    margin: 6px 0;
-    border-radius: 0 6px 6px 0;
-    color: #e2e8f0;
-    font-size: 0.9rem;
-    line-height: 1.6;
-}
-.source-badge {
-    display:inline-block;
-    background:rgba(56,189,248,0.12);
-    border:1px solid rgba(56,189,248,0.3);
-    color:#38bdf8;
-    font-size:0.72rem;
-    padding:2px 8px;
-    border-radius:999px;
-    margin:2px 4px 2px 0;
-}
-.bar-bg { background:rgba(255,255,255,0.06); border-radius:999px; height:8px; overflow:hidden; }
-.bar-high   { height:8px; border-radius:999px; background:linear-gradient(90deg,#dc2626,#f87171); }
-.bar-medium { height:8px; border-radius:999px; background:linear-gradient(90deg,#d97706,#fbbf24); }
-.bar-low    { height:8px; border-radius:999px; background:linear-gradient(90deg,#16a34a,#4ade80); }
-.bar-blue   { height:8px; border-radius:999px; background:linear-gradient(90deg,#0284c7,#38bdf8); }
-
-.safety-box {
-    background: rgba(220,38,38,0.08);
-    border: 1px solid rgba(248,113,113,0.3);
-    border-radius: 8px;
-    padding: 12px 16px;
-    margin-top: 16px;
-    font-size: 0.82rem;
-    color: #fca5a5;
-    line-height: 1.7;
-}
-div[data-testid="stSelectbox"] > div > div,
-div[data-testid="stTextArea"] textarea,
-div[data-testid="stTextInput"] input {
-    background: rgba(255,255,255,0.04) !important;
-    border: 1px solid rgba(30,64,120,0.6) !important;
-    color: #e2e8f0 !important;
-    border-radius: 8px !important;
-}
-div.stButton > button {
-    background: linear-gradient(135deg,#0284c7,#38bdf8) !important;
-    color: white !important;
-    border: none !important;
-    font-weight: 700 !important;
-    border-radius: 8px !important;
-    box-shadow: 0 0 16px rgba(56,189,248,0.25) !important;
-    width: 100%;
-}
-div.stButton > button:hover { opacity: 0.9 !important; }
-hr { border-color: rgba(30,64,120,0.45) !important; }
-footer { visibility: hidden; }
-</style>
-""", unsafe_allow_html=True)
+if "gps_approved" not in st.session_state:
+    st.session_state["gps_approved"] = False
 
 
 # ═══════════════════════════════════════════════════
@@ -145,6 +104,50 @@ def score_to_risk_class(score: float) -> str:
     if score >= 0.7: return "risk-high"
     if score >= 0.4: return "risk-medium"
     return "risk-low"
+
+
+def render_browser_geolocation_button() -> None:
+    """GPS 定位按鈕：使用 streamlit_js_eval 避免 iframe 跨域導航問題。"""
+    if not _HAS_GEO:
+        st.warning("請安裝 streamlit-js-eval：`pip install streamlit-js-eval`")
+        return
+
+    if not st.session_state.get("gps_approved"):
+        if st.button("取得目前 GPS 定位", use_container_width=True, key="gps_btn"):
+            st.session_state["gps_approved"] = True
+            st.rerun()
+        return
+
+    st.caption("瀏覽器會彈出授權視窗，請點選「允許」。若瀏覽器封鎖定位，可點「✖ 取消」改用手動輸入。")
+    geo = _get_geo()
+
+    if geo and isinstance(geo, dict) and geo.get("coords"):
+        lat = geo["coords"]["latitude"]
+        lng = geo["coords"]["longitude"]
+        acc = geo["coords"].get("accuracy", "?")
+        st.session_state["report_latitude"]  = lat
+        st.session_state["report_longitude"] = lng
+        st.session_state["latitude_input"]   = lat
+        st.session_state["longitude_input"]  = lng
+        st.session_state["gps_status"]       = f"已取得 GPS 定位（精確度 ±{acc:.0f}m）"
+        st.session_state["gps_approved"]     = False
+        st.rerun()
+    elif geo and isinstance(geo, dict) and geo.get("error"):
+        # 瀏覽器明確拒絕或發生錯誤
+        err_msg = geo.get("error", {})
+        code = err_msg.get("code", "") if isinstance(err_msg, dict) else ""
+        if code == 1:
+            st.warning("瀏覽器定位已被拒絕（Permission Denied）。請切換為「手動輸入座標 / 僅填行政區」。")
+        else:
+            st.warning("無法取得 GPS 定位（可能逾時或環境不支援）。請切換為「手動輸入座標 / 僅填行政區」。")
+        st.session_state["gps_approved"] = False
+        st.rerun()
+    else:
+        # geo = None 表示瀏覽器還在等待授權，讓 component 拿到結果後自動 rerun
+        st.info("等待瀏覽器回應定位授權……")
+        if st.button("✖ 取消定位", key="gps_cancel"):
+            st.session_state["gps_approved"] = False
+            st.rerun()
 
 
 def render_model_card(title: str, result: dict):
@@ -177,6 +180,23 @@ def render_model_card(title: str, result: dict):
           {confidence_bar(c, score_to_bar_class(c))}
         </div>
         """, unsafe_allow_html=True)
+
+
+def render_ai_summary_card(title: str, result: dict) -> None:
+    st.markdown(
+        f"""
+        <div class="cl-ai-result">
+          <div class="cl-ai-icon">≋</div>
+          <div style="flex:1;min-width:0">
+            <div class="cl-stat-label">{title}</div>
+            <div style="font-size:1.08rem;font-weight:900">{result['top_class_zh']}</div>
+            <div class="cl-card-note">Confidence 信心度：{result['confidence']:.1%}</div>
+            {confidence_bar(result['confidence'], score_to_bar_class(result['confidence']))}
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def render_rag_result(rag_result: dict, disaster_type_zh: str):
@@ -213,33 +233,15 @@ def render_rag_result(rag_result: dict, disaster_type_zh: str):
 # Sidebar
 # ═══════════════════════════════════════════════════
 with st.sidebar:
-    st.markdown("""
-    <div style="display:flex;align-items:center;gap:10px;margin-bottom:20px">
-      <div style="width:36px;height:36px;background:rgba(56,189,248,0.15);
-                  border:1px solid rgba(56,189,248,0.3);border-radius:8px;
-                  display:flex;align-items:center;justify-content:center;
-                  font-weight:800;font-size:0.9rem;color:#38bdf8">CL</div>
-      <div>
-        <div style="font-weight:700;font-size:1rem;color:#e2e8f0">CrisisLens</div>
-        <div style="font-size:0.7rem;color:#475569">災情分類與應變建議</div>
-      </div>
-    </div>
-    """, unsafe_allow_html=True)
-
+    st.markdown("---")
     st.markdown("### ⚙️ 模型設定")
     model_mode = st.selectbox(
         "使用模型",
-        ["CLIP（Zero-Shot）", "ResNet50（Baseline）", "兩者比較"],
+        ["CLIP ViT-L/14", "ResNet50", "兩者比較 (CLIP + ResNet50)", "自訓練 CNN"],
+        help="「兩者比較」同時執行 CLIP 與 ResNet50，顯示模型一致性（model_agreement）",
     )
 
-    prompt_set_key = list(PROMPT_SETS.keys())[1]  # B 預設
-    if "CLIP" in model_mode or "比較" in model_mode:
-        prompt_set_key = st.selectbox(
-            "CLIP Prompt Set",
-            list(PROMPT_SETS.keys()),
-            index=1,
-            help="A=簡短、B=完整句、C=社群情境",
-        )
+    prompt_set_key = list(PROMPT_SETS.keys())[1]  # B 預設（單 prompt 比較用）
 
     st.markdown("---")
     st.markdown("### 📋 系統狀態")
@@ -253,31 +255,55 @@ with st.sidebar:
     else:
         st.info("未設定 GEMINI_API_KEY\n將使用內建指引")
 
+    try:
+        from safety.shieldgemma_guard import safety_backend_status
+        _safety_status = safety_backend_status()
+        if _safety_status["local_shieldgemma_enabled"]:
+            st.info(
+                "🛡️ Safety Guard：Keyword + Gemini + ShieldGemma\n"
+                f"`{_safety_status['local_shieldgemma_model']}`"
+            )
+        elif _safety_status["gemini"]:
+            st.info("🛡️ Safety Guard：Keyword + Gemini")
+        else:
+            st.warning("🛡️ Safety Guard：Keyword fallback")
+    except Exception:
+        st.warning("🛡️ Safety Guard：狀態讀取失敗")
+
     st.markdown("---")
-    st.caption("v1.0 · CLIP + ResNet50 + RAG")
+    st.caption("v2.0 · CLIP ViT-L/14 + ResNet50 + DisasterCNN + RAG")
 
 
 # ═══════════════════════════════════════════════════
 # Main Page
 # ═══════════════════════════════════════════════════
-st.markdown("""
-<section class="cl-hero">
-  <div>
-    <div class="cl-kicker">CrisisLens AI</div>
-    <h1 class="cl-title">災情圖文分類與應變建議系統</h1>
-    <div class="cl-subtitle">
-      上傳災情照片，系統自動分類災害類型並提供應變建議。
-    </div>
-  </div>
-</section>
-<hr>
-""", unsafe_allow_html=True)
+analysis = st.session_state.get("citizen_analysis")
+if analysis and analysis.get("model_mode") != model_mode:
+    st.session_state.pop("citizen_analysis", None)
+    analysis = None
+
+# 模式旗標（集中管理，避免散落多處的字串比對）
+_USE_CLIP   = "CLIP"   in model_mode or "比較" in model_mode
+_USE_RESNET = "ResNet" in model_mode or "比較" in model_mode
+_USE_CNN    = "CNN"    in model_mode
 
 # ── 輸入區 ────────────────────────────────────────────────────
-col_upload, col_meta = st.columns([1, 1], gap="large")
+left_col, right_col = st.columns([1.05, 0.95], gap="large")
 
-with col_upload:
-    st.markdown("#### 📷 上傳災情照片")
+with left_col:
+    top_pill(2, "民眾端 - 災情回報頁面", "Citizen Portal")
+    st.markdown(
+        """
+        <section class="cl-inline-header">
+          <div class="cl-kicker">Citizen Portal</div>
+          <h1 class="cl-title">災情回報</h1>
+          <div class="cl-subtitle">上傳災害照片，AI 會先辨識災害種類並提供基本防災建議；確認後再送出回報。</div>
+        </section>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.markdown('<div class="cl-panel-title">災情回報</div>', unsafe_allow_html=True)
+    st.markdown('<div class="cl-panel-title">1. 上傳災害照片</div>', unsafe_allow_html=True)
     uploaded_file = st.file_uploader(
         "支援 JPG、PNG、WEBP",
         type=["jpg", "jpeg", "png", "webp"],
@@ -287,21 +313,186 @@ with col_upload:
         img_preview = load_image(uploaded_file)
         st.image(resize_for_display(img_preview), use_container_width=True)
 
-with col_meta:
-    st.markdown("#### 📝 補充資訊（選填）")
+    st.markdown('<div class="cl-panel-title">2. 位置授權</div>', unsafe_allow_html=True)
+    gps_mode = st.radio(
+        "是否允許取得目前 GPS 定位？",
+        ["詢問瀏覽器定位", "手動輸入座標 / 僅填行政區"],
+        horizontal=True,
+        label_visibility="visible",
+    )
+    if gps_mode == "詢問瀏覽器定位":
+        st.caption("按下按鈕後，瀏覽器會詢問是否允許取得目前位置；若拒絕授權，仍可手動輸入座標或只填行政區。")
+        render_browser_geolocation_button()
+        if st.session_state.get("gps_status"):
+            st.success(st.session_state["gps_status"])
+
+    st.markdown('<div class="cl-panel-title">3. 災情資訊確認</div>', unsafe_allow_html=True)
     user_desc = st.text_area(
         "描述",
         placeholder="例如：道路旁有大量積水，無法通行...",
         height=110,
-        label_visibility="collapsed",
     )
-    location = st.text_input(
-        "地點",
-        placeholder="例如：台北市信義區...",
-        label_visibility="collapsed",
-    )
+    location_name = st.text_input("地點名稱", placeholder="例如：信義路五段100號附近")
+    city_col, district_col = st.columns(2)
+    with city_col:
+        city = st.selectbox("縣市", ["","台北市","新北市","桃園市","台中市","台南市","高雄市",
+                                     "基隆市","新竹市","新竹縣","苗栗縣","彰化縣","南投縣",
+                                     "雲林縣","嘉義市","嘉義縣","屏東縣","宜蘭縣","花蓮縣",
+                                     "台東縣","澎湖縣","金門縣","連江縣"])
+    with district_col:
+        district = st.text_input("行政區", placeholder="例如：信義區")
+    gps_col1, gps_col2 = st.columns(2)
+    with gps_col1:
+        latitude = st.number_input(
+            "緯度（選填）",
+            value=float(st.session_state.get("report_latitude", 0.0)),
+            format="%.6f",
+            key="latitude_input",
+        )
+    with gps_col2:
+        longitude = st.number_input(
+            "經度（選填）",
+            value=float(st.session_state.get("report_longitude", 0.0)),
+            format="%.6f",
+            key="longitude_input",
+        )
+    st.markdown('<div class="cl-step-label">現場狀況</div>', unsafe_allow_html=True)
+    need_help = st.checkbox("需要協助")
+    ppl_count = st.number_input("大約需要協助人數", min_value=0, max_value=999, value=0)
+    has_trapped = st.checkbox("有人受困")
+    has_injured = st.checkbox("有人受傷")
+    road_blocked = st.checkbox("道路不可通行")
+    power_outage = st.checkbox("停電")
     st.markdown("<br>", unsafe_allow_html=True)
-    analyze_btn = st.button("🚀 開始分析", use_container_width=True)
+    analyze_btn = st.button("AI 辨識並產生建議", use_container_width=True)
+
+with right_col:
+    if latitude != 0.0 and longitude != 0.0:
+        import pandas as pd
+        st.caption("📍 回報位置預覽")
+        st.map(pd.DataFrame({"lat": [latitude], "lon": [longitude]}), zoom=14, use_container_width=True)
+        loc_label = f"{city}{district}".strip() or "未填地點"
+        preview_h3 = None
+        try:
+            preview_h3 = latlng_to_h3_cell(latitude, longitude)
+        except Exception:
+            pass
+        st.caption(f"{loc_label}　{latitude:.6f}, {longitude:.6f}")
+        if preview_h3:
+            st.caption(f"H3 Cell：`{preview_h3}`")
+    else:
+        st.markdown(
+            """
+            <div class="cl-location-empty">
+              <strong>尚未提供 GPS 座標</strong>
+              <span>可先填寫地點名稱與行政區，送出時仍會保留回報資料。</span>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    st.markdown('<div style="height:.85rem"></div>', unsafe_allow_html=True)
+    if analysis:
+        clip_preview   = analysis.get("clip_result")
+        resnet_preview = analysis.get("resnet_result")
+        cnn_preview    = analysis.get("cnn_result")
+        second_preview = resnet_preview or cnn_preview
+        second_label   = "ResNet50" if resnet_preview else "自訓練 CNN (DisasterCNN_v1)"
+        primary_preview = analysis["primary"]
+        m_agree  = analysis.get("model_agreement", 1)
+        n_review = analysis.get("need_review", 0)
+        gap_val  = analysis.get("clip_top2_gap", 1.0)
+
+        st.markdown('<div class="cl-panel-title">AI 辨識結果</div>', unsafe_allow_html=True)
+        if "比較" in analysis.get("model_mode", "") and clip_preview and second_preview:
+            _c1, _c2 = st.columns(2)
+            with _c1:
+                render_ai_summary_card("CLIP ViT-L/14", clip_preview)
+            with _c2:
+                render_ai_summary_card(second_label, second_preview)
+        else:
+            render_ai_summary_card("主要辨識結果", primary_preview)
+
+        # ── model_agreement & need_review badges ────────────
+        if second_preview:
+            _agree_color = "#4ade80" if m_agree else "#fb923c"
+            _agree_icon  = "✅" if m_agree else "⚠️"
+            _agree_text  = "模型一致（model_agreement = 1）" if m_agree else "模型不一致（model_agreement = 0）"
+            st.markdown(
+                f'<div style="margin:8px 0 4px;padding:7px 12px;border-radius:6px;'
+                f'background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.1);'
+                f'font-size:.82rem;display:flex;gap:18px;align-items:center">'
+                f'<span style="color:{_agree_color};font-weight:700">{_agree_icon} {_agree_text}</span>'
+                f'<span style="color:#94a3b8">Top-2 gap：{gap_val:.1%}</span>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+        if n_review:
+            st.markdown(
+                '<div style="margin-bottom:10px;padding:7px 12px;border-radius:6px;'
+                'background:rgba(251,191,36,.08);border:1px solid rgba(251,191,36,.35);'
+                'font-size:.82rem;color:#fbbf24;font-weight:600">'
+                '🔍 need_review = 1 — AI 信心度不足或兩模型結果不一致，建議人工確認</div>',
+                unsafe_allow_html=True,
+            )
+
+        # ── Safety Guard 結果卡片（三層防護可視化）────────────
+        _in_s   = analysis.get("input_safety",  {})
+        _img_s  = analysis.get("image_safety",  {})
+        _out_s  = analysis.get("output_safety", {})
+
+        def _safety_label_html(label: str, method: str) -> str:
+            _label_map  = {"safe": ("✅ 安全", "#4ade80"), "review": ("🔍 需審查", "#fbbf24"),
+                           "sanitize": ("🔧 已淨化", "#fb923c"), "block": ("🚫 封鎖", "#f87171")}
+            _method_map = {"keyword": "關鍵字規則", "gemini": "Gemini API",
+                           "shieldgemma": "ShieldGemma 本地", "gemini_vision": "Gemini Vision",
+                           "skip": "略過（空白）"}
+            lbl_text, lbl_color = _label_map.get(label, (label or "—", "#94a3b8"))
+            mth_text = _method_map.get(method, method or "—")
+            return (
+                f'<span style="color:{lbl_color};font-weight:700">{lbl_text}</span>'
+                f'<span style="color:#64748b;font-size:.75rem;margin-left:4px">({mth_text})</span>'
+            )
+
+        _sg_rows = [
+            ("📝 文字輸入", _in_s.get("label","safe"),  _in_s.get("method","keyword")),
+            ("🖼️ 圖片內容", _img_s.get("label","safe"), _img_s.get("method","skip")),
+            ("📋 建議輸出", _out_s.get("label","safe"),  _out_s.get("method","keyword")),
+        ]
+        _sg_html = "".join(
+            f'<div style="display:flex;justify-content:space-between;align-items:center;'
+            f'padding:3px 0;border-bottom:1px solid rgba(255,255,255,.05)">'
+            f'<span style="color:#94a3b8;font-size:.8rem">{name}</span>'
+            f'{_safety_label_html(lbl, mth)}</div>'
+            for name, lbl, mth in _sg_rows
+        )
+        st.markdown(
+            f'<div style="margin:10px 0 14px;padding:10px 14px;border-radius:8px;'
+            f'background:rgba(56,189,248,.05);border:1px solid rgba(56,189,248,.2)">'
+            f'<div style="font-size:.78rem;font-weight:700;color:#38bdf8;margin-bottom:6px">'
+            f'🛡️ ShieldGemma 3-層安全檢查結果</div>'
+            f'{_sg_html}</div>',
+            unsafe_allow_html=True,
+        )
+
+        st.markdown('<div class="cl-panel-title">AI 防災建議</div>', unsafe_allow_html=True)
+        render_rag_result(analysis["rag_result"], primary_preview["top_class_zh"])
+        st.markdown("""
+        <div class="safety-box" style="margin-top:14px">
+          ⚠️ <strong>AI Safety 提醒</strong><br>
+          本系統分類與建議僅供初步參考，不代表官方災害判定。<br>
+          若有立即危險，請<strong>優先撥打 119 / 110</strong>。
+        </div>
+        """, unsafe_allow_html=True)
+    else:
+        st.markdown(
+            """
+            <div class="cl-location-empty" style="min-height:180px">
+              <strong>尚未進行 AI 辨識</strong>
+              <span>上傳照片並按下「AI 辨識並產生建議」後，才會顯示災害類型與防災建議。</span>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
 st.markdown("<hr>", unsafe_allow_html=True)
 
@@ -315,67 +506,271 @@ if analyze_btn:
     uploaded_file.seek(0)
     img = load_image(uploaded_file)
 
+    # ── Safety: Input Guard（描述文字）──────────────────────
+    from safety.shieldgemma_guard import (
+        check_user_input, check_image_safety,
+        check_rag_output, sanitize_advice, safety_summary,
+    )
+    _input_check = check_user_input(user_desc)
+    if _input_check["blocked"]:
+        st.error(
+            f"⚠️ 您的描述含有不允許的內容，請修改後重新送出。\n"
+            f"原因：{_input_check['reason']}"
+        )
+        st.stop()
+    if _input_check["label"] == "review":
+        st.warning("⚠️ 描述中偵測到敏感資訊，此回報將標記為需人工審查。")
+
+    # ── Safety: Image Guard（Gemini Vision，有 key 才執行）──
+    _image_check = check_image_safety(img)
+    if _image_check["blocked"]:
+        st.error("⚠️ 上傳的圖片含有不允許的內容，請換一張照片。")
+        st.stop()
+
     clip_result   = None
     resnet_result = None
+    cnn_result    = None
 
     with st.spinner("模型推論中..."):
-        if "CLIP" in model_mode or "比較" in model_mode:
-            from models.clip_classifier import classify as clip_classify
-            clip_result = clip_classify(img, prompt_set_key)
+        # ── CLIP ViT-L/14（零樣本，多 prompt 平均）──────────
+        if _USE_CLIP:
+            from models.clip_classifier import classify_multi_prompt as clip_classify
+            clip_result = clip_classify(img)
 
-        if "ResNet50" in model_mode or "比較" in model_mode:
-            from models.resnet_baseline import classify as resnet_classify
-            resnet_result = resnet_classify(img)
+        # ── ResNet50 Linear Probe（fine-tuned on MEDIC）──────
+        if _USE_RESNET:
+            try:
+                from models.resnet_baseline import classify as resnet_classify
+                resnet_result = resnet_classify(img)
+            except Exception as _e:
+                from utils.logger import log_error
+                log_error("resnet_classify", str(_e), exc_info=True,
+                          username=user.get("username"))
+                st.warning("⚠️ ResNet50 載入失敗，請確認 models/resnet50_linear.pth 存在。")
 
-    primary = clip_result or resnet_result
+        # ── DisasterCNN_v1（自訓練 4-block CNN）──────────────
+        if _USE_CNN and CNN_AUX_ENABLED:
+            try:
+                from models.custom_cnn_classifier import classify as cnn_classify, weights_exist
+                if weights_exist():
+                    cnn_result = cnn_classify(img)
+            except Exception as _e:
+                from utils.logger import log_error
+                log_error("cnn_classify", str(_e), exc_info=True,
+                          username=user.get("username"))
 
-    # ── 模型結果 ───────────────────────────────────────────
-    st.markdown("## 📊 分類結果")
+    primary = clip_result or resnet_result or cnn_result
 
-    if "比較" in model_mode and clip_result and resnet_result:
-        mc1, mc2 = st.columns(2)
-        with mc1:
-            render_model_card("CLIP Zero-Shot", clip_result)
-        with mc2:
-            loaded_label = "✅ 已訓練" if resnet_result["model_loaded"] else "⚠️ 未訓練（隨機）"
-            render_model_card(f"ResNet50 {loaded_label}", resnet_result)
-    else:
-        col_card, col_blank = st.columns([1, 1])
-        with col_card:
-            label = "CLIP Zero-Shot" if clip_result else (
-                "ResNet50 ✅" if resnet_result and resnet_result["model_loaded"] else "ResNet50 ⚠️ 未訓練"
-            )
-            render_model_card(label, primary)
+    # ── 計算 model_agreement & need_review（分析階段就算）──
+    _second_model    = resnet_result or cnn_result
+    _model_agreement = 1
+    if clip_result and _second_model:
+        if _second_model.get("top_class_zh") != clip_result.get("top_class_zh"):
+            _model_agreement = 0
 
-    # ── RAG 應變建議 ───────────────────────────────────────
-    st.markdown("## 💡 應變建議")
+    _top3_for_gap = (clip_result or {}).get("top_3", [])
+    _clip_gap     = (_top3_for_gap[0]["score"] - _top3_for_gap[1]["score"]
+                     if len(_top3_for_gap) >= 2 else 1.0)
+    _need_review  = int(
+        primary["confidence"] < CLIP_LOW_CONF_THRESHOLD
+        or _clip_gap          < CLIP_TOP2_GAP_THRESHOLD
+        or _model_agreement   == 0
+    )
+
     with st.spinner("生成建議..."):
         from rag.generator import generate_advice
         rag_result = generate_advice(
             disaster_type_zh=primary["top_class_zh"],
             confidence=primary["confidence"],
             user_description=user_desc,
-            location=location,
+            location=f"{city}{district}{location_name}",
         )
-    render_rag_result(rag_result, primary["top_class_zh"])
 
-    # ── Safety 提醒 ────────────────────────────────────────
-    st.markdown("""
-    <div class="safety-box">
-      ⚠️ <strong>AI Safety 提醒</strong><br>
-      本系統分類與建議僅供災害資訊整理與初步參考，不代表官方災害判定。<br>
-      若有人員受困、受傷或有立即危險，請<strong>優先撥打 119、110</strong> 或依政府公告行動。<br>
-      RAG 建議來自系統整理之防災文件，仍需由使用者與管理者自行判斷適用性。
-    </div>
-    """, unsafe_allow_html=True)
+    # ── Safety: Output Guard（RAG 建議）─────────────────────
+    _output_check = check_rag_output(rag_result["advice"])
+    if _output_check["label"] == "sanitize":
+        rag_result["advice"] = sanitize_advice(rag_result["advice"])
+    elif _output_check["label"] == "block":
+        # 極端情況：整批替換
+        from safety.policies import SANITIZED_REPLACEMENT
+        rag_result["advice"] = [SANITIZED_REPLACEMENT]
 
-else:
-    st.markdown("""
-    <div style="text-align:center;padding:60px 20px">
-      <div style="font-size:3rem;margin-bottom:16px">🖼️</div>
-      <div style="font-size:1.1rem;font-weight:600;color:#475569">上傳照片後點擊「開始分析」</div>
-      <div style="font-size:0.85rem;margin-top:8px;color:#334155">
-        系統將自動辨識災害類型並提供應變建議
-      </div>
-    </div>
-    """, unsafe_allow_html=True)
+    st.session_state["citizen_analysis"] = {
+        "clip_result":       clip_result,
+        "resnet_result":     resnet_result,
+        "cnn_result":        cnn_result,
+        "primary":           primary,
+        "rag_result":        rag_result,
+        "model_mode":        model_mode,
+        "model_agreement":   _model_agreement,
+        "need_review":       _need_review,
+        "clip_top2_gap":     _clip_gap,
+        "input_safety":      _input_check,
+        "output_safety":     _output_check,
+        "image_safety":      _image_check,
+    }
+    st.rerun()
+
+elif not analysis:
+    empty_state("上傳照片後點擊「AI 辨識並產生建議」", "系統將自動辨識災害類型並提供應變建議。", "🖼️")
+
+if analysis and uploaded_file:
+    st.markdown("<hr>", unsafe_allow_html=True)
+    st.markdown("#### 送出災情回報")
+    st.caption("管理端會依災害群組與地點距離聚合事件，並依 Priority Score 排序。")
+
+    # ── 速率限制：每用戶每小時最多 10 筆回報 ─────────────────
+    _RATE_LIMIT = 10
+    _RATE_WINDOW_MIN = 60
+    _recent_count = count_recent_reports_by_user(user["username"], minutes=_RATE_WINDOW_MIN)
+    if _recent_count >= _RATE_LIMIT:
+        st.error(
+            f"⚠️ 您在過去 {_RATE_WINDOW_MIN} 分鐘內已送出 {_recent_count} 筆回報，"
+            f"超過每小時上限（{_RATE_LIMIT} 筆）。\n請稍後再試，或聯絡管理員。"
+        )
+        st.stop()
+
+    if st.button("送出災情回報", use_container_width=True):
+        uploaded_file.seek(0)
+        img = load_image(uploaded_file)
+        fname = f"{uuid.uuid4().hex}.jpg"
+        fpath = _save_image(img, fname)
+
+        primary       = analysis["primary"]
+        clip_result   = analysis.get("clip_result") or primary
+        resnet_result = analysis.get("resnet_result")
+        cnn_result    = analysis.get("cnn_result")
+        # 用於 DB：優先記錄 ResNet50，若無則 CustomCNN
+        _aux_result   = resnet_result or cnn_result
+        rag_result    = analysis["rag_result"]
+
+        # ── Safety labels（從 analyze 階段帶入）──────────────
+        _in_safety  = analysis.get("input_safety",  {})
+        _out_safety = analysis.get("output_safety", {})
+        from safety.shieldgemma_guard import safety_summary
+        _safety_reason = safety_summary(_in_safety, _out_safety) or None
+
+        has_gps = latitude != 0.0 and longitude != 0.0
+        lat_val = float(latitude) if has_gps else None
+        lng_val = float(longitude) if has_gps else None
+        try:
+            h3_val = latlng_to_h3_cell(lat_val, lng_val) if has_gps else None
+        except RuntimeError as exc:
+            st.error(str(exc))
+            st.stop()
+
+        # ── 自動補地名（有 GPS 但無 city/district 時反向地理編碼）────
+        geo_city     = city     or ""
+        geo_district = district or ""
+        geo_location = location_name or ""
+        if has_gps and not (geo_city and geo_district):
+            try:
+                from utils.geocoding import reverse_geocode
+                geo_info = reverse_geocode(lat_val, lng_val)
+                if not geo_city:
+                    geo_city = geo_info.get("city", "") or ""
+                if not geo_district:
+                    geo_district = geo_info.get("district", "") or ""
+                if not geo_location and geo_info.get("display_name"):
+                    geo_location = geo_info["display_name"]
+            except Exception as _e:
+                from utils.logger import log_error
+                log_error("geocoding", str(_e), exc_info=True)
+
+        grid_id, grid_type_val = _derive_grid_id({
+            "h3_cell": h3_val,
+            "city": geo_city or None,
+            "district": geo_district or None,
+        })
+
+        report_base = {
+            "has_injured_people": int(has_injured),
+            "has_trapped_people": int(has_trapped),
+            "road_blocked": int(road_blocked),
+            "power_outage": int(power_outage),
+            "need_help": int(need_help),
+            "reported_people_count": int(ppl_count),
+            "disaster_type": primary["top_class"],
+            "clip_confidence": primary["confidence"],
+        }
+        sev_score, sev_level = calc_report_severity(report_base)
+
+        # 使用分析階段已計算的值（避免重算）
+        model_agreement  = analysis.get("model_agreement", 1)
+        need_review_flag = analysis.get("need_review", 0)
+
+        # model_run 版本記錄（ResNet50 優先，否則 CNN）
+        from utils.versions import CNN_MODEL_VERSION as _CNN_VER
+        _RESNET_VER = "resnet50-linear-probe-medic-5class-v1"
+        _aux_ver = _RESNET_VER if resnet_result else (_CNN_VER if cnn_result else None)
+
+        now = datetime.now().isoformat(timespec="seconds")
+        run_id = insert_model_run({
+            "run_time": now,
+            "trigger": "submit",
+            "clip_model_version": CLIP_MODEL_VERSION,
+            "clip_prompt_version": CLIP_PROMPT_VERSION,
+            "resnet_model_version": _aux_ver,
+            "rag_index_version": RAG_INDEX_VERSION,
+            "rag_prompt_version": RAG_PROMPT_VERSION,
+            "aggregation_rule_version": AGGREGATION_RULE_VERSION,
+            "priority_rule_version": PRIORITY_RULE_VERSION,
+            "report_id": None,
+            "notes": f"submitted_by={user['username']}",
+        })
+
+        full_report = {
+            "event_id": None,
+            "image_path": fpath,
+            "description": user_desc,
+            "location_name": geo_location or None,
+            "city": geo_city or None,
+            "district": geo_district or None,
+            "latitude": lat_val,
+            "longitude": lng_val,
+            "location_source": "gps" if has_gps else "manual",
+            "h3_cell": h3_val,
+            "h3_resolution": DEFAULT_RESOLUTION if h3_val else None,
+            "grid_id": grid_id,
+            "grid_type": grid_type_val,
+            "event_time": now,
+            "upload_time": now,
+            "clip_model_version": CLIP_MODEL_VERSION,
+            "clip_prompt_version": CLIP_PROMPT_VERSION,
+            "clip_disaster_type": primary["top_class"],
+            "clip_confidence": primary["confidence"],
+            "clip_top3": json.dumps(top3, ensure_ascii=False),
+            "top3_predictions": json.dumps(top3, ensure_ascii=False),
+            "resnet_model_version": _aux_ver,
+            "resnet_disaster_type": _aux_result["top_class"] if _aux_result else None,
+            "resnet_confidence":    _aux_result["confidence"] if _aux_result else None,
+            "disaster_type": primary["top_class"],
+            "model_agreement": model_agreement,
+            "need_review": need_review_flag,
+            "need_help": int(need_help),
+            "reported_people_count": int(ppl_count),
+            "has_trapped_people": int(has_trapped),
+            "has_injured_people": int(has_injured),
+            "road_blocked": int(road_blocked),
+            "power_outage": int(power_outage),
+            "report_severity_score": sev_score,
+            "report_severity_level": sev_level,
+            "rag_version": RAG_PROMPT_VERSION,
+            "rag_advice": json.dumps(rag_result["advice"], ensure_ascii=False),
+            "rag_sources": json.dumps(rag_result["sources"], ensure_ascii=False),
+            "model_run_id": run_id,
+            "aggregation_rule_version": AGGREGATION_RULE_VERSION,
+            "priority_rule_version": PRIORITY_RULE_VERSION,
+            # Safety guard 結果
+            "input_safety_label":  _in_safety.get("label", "safe"),
+            "output_safety_label": _out_safety.get("label", "safe"),
+            "safety_reason":       _safety_reason,
+            # 提交者（速率限制 / 稽核用）
+            "submitted_by":        user["username"],
+        }
+
+        report_id = insert_report(full_report)
+        update_model_run_report(run_id, report_id)
+        agg = aggregate(full_report, report_id)
+        st.session_state.pop("citizen_analysis", None)
+        st.success(f"已送出回報，事件 #{agg['event_id']}，優先級 {agg['event_priority_level']}。")
