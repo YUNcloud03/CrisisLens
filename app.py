@@ -643,6 +643,7 @@ if analysis and uploaded_file:
         # 用於 DB：優先記錄 ResNet50，若無則 CustomCNN
         _aux_result   = resnet_result or cnn_result
         rag_result    = analysis["rag_result"]
+        top3          = (clip_result or primary).get("top_3", [])
 
         # ── Safety labels（從 analyze 階段帶入）──────────────
         _in_safety  = analysis.get("input_safety",  {})

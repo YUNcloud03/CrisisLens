@@ -212,7 +212,8 @@ for i, rpt in enumerate(reports, 1):
 
         # 現有修正記錄
         existing = get_admin_corrections(report_id=rpt["report_id"])
-        with st.expander(f"📝 管理員修正（{len(existing)} 筆歷史）", expanded=False):
+        st.markdown(f"**📝 管理員修正（{len(existing)} 筆歷史）**")
+        with st.container():
             if existing:
                 for cx in existing:
                     st.markdown(
