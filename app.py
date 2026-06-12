@@ -311,7 +311,7 @@ with left_col:
     )
     if uploaded_file:
         img_preview = load_image(uploaded_file)
-        st.image(resize_for_display(img_preview), use_container_width=True)
+        st.image(resize_for_display(img_preview), width="stretch")
 
     st.markdown('<div class="cl-panel-title">2. 位置授權</div>', unsafe_allow_html=True)
     gps_mode = st.radio(
@@ -364,13 +364,13 @@ with left_col:
     road_blocked = st.checkbox("道路不可通行")
     power_outage = st.checkbox("停電")
     st.markdown("<br>", unsafe_allow_html=True)
-    analyze_btn = st.button("AI 辨識並產生建議", use_container_width=True)
+    analyze_btn = st.button("AI 辨識並產生建議", width="stretch")
 
 with right_col:
     if latitude != 0.0 and longitude != 0.0:
         import pandas as pd
         st.caption("📍 回報位置預覽")
-        st.map(pd.DataFrame({"lat": [latitude], "lon": [longitude]}), zoom=14, use_container_width=True)
+        st.map(pd.DataFrame({"lat": [latitude], "lon": [longitude]}), zoom=14, width="stretch")
         loc_label = f"{city}{district}".strip() or "未填地點"
         preview_h3 = None
         try:
@@ -630,7 +630,7 @@ if analysis and uploaded_file:
         )
         st.stop()
 
-    if st.button("送出災情回報", use_container_width=True):
+    if st.button("送出災情回報", width="stretch"):
         uploaded_file.seek(0)
         img = load_image(uploaded_file)
         fname = f"{uuid.uuid4().hex}.jpg"

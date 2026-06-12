@@ -27,7 +27,18 @@ if not events:
 
 event_options = {f"#{e['event_id']} {e.get('event_name','（未命名）')} [{e.get('event_priority_level','')}]": e["event_id"]
                  for e in events}
-selected_label = st.selectbox("選擇事件", list(event_options.keys()))
+_labels = list(event_options.keys())
+
+# 從 Dashboard 跳轉時帶入 selected_event_id
+_preselect_id = st.session_state.pop("selected_event_id", None)
+_default_idx = 0
+if _preselect_id is not None:
+    for i, label in enumerate(_labels):
+        if event_options[label] == _preselect_id:
+            _default_idx = i
+            break
+
+selected_label = st.selectbox("選擇事件", _labels, index=_default_idx)
 event_id = event_options[selected_label]
 
 ev      = get_event(event_id)
@@ -134,7 +145,7 @@ for i, rpt in enumerate(reports, 1):
                 from PIL import Image
                 from utils.image_utils import resize_for_display
                 img = Image.open(img_path).convert("RGB")
-                st.image(resize_for_display(img), use_container_width=True)
+                st.image(resize_for_display(img), width="stretch")
             else:
                 st.markdown("<div style='color:#475569;text-align:center;padding:30px'>無圖片</div>", unsafe_allow_html=True)
 

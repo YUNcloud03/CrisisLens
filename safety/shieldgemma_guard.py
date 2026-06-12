@@ -158,7 +158,7 @@ def _gemini_check(text: str, prompt_tpl: str, valid_labels: set[str]) -> dict | 
         import google.generativeai as genai
         genai.configure(api_key=_GEMINI_API_KEY)
         model = genai.GenerativeModel(
-            "gemini-2.0-flash",
+            "gemini-2.5-flash",
             safety_settings=_PERMISSIVE_SAFETY,
         )
         resp = model.generate_content(prompt_tpl.format(text=text[:1200]))
@@ -350,7 +350,7 @@ def check_image_safety(img: Image.Image) -> dict:
         import google.generativeai as genai
         genai.configure(api_key=_GEMINI_API_KEY)
         model = genai.GenerativeModel(
-            "gemini-2.0-flash",
+            "gemini-2.5-flash",
             safety_settings=_PERMISSIVE_SAFETY,
         )
         # 縮小圖片降低 token 成本

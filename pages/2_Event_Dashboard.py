@@ -135,8 +135,9 @@ for idx, ev in enumerate(events, 1):
     with st.expander(f"▶ 查看事件 #{ev['event_id']} 詳情 / 更改狀態"):
         sc1, sc2 = st.columns([2, 1])
         with sc1:
-            st.page_link(f"pages/3_Event_Detail.py",
-                         label=f"📋 開啟事件 #{ev['event_id']} 完整頁面")
+            if st.button(f"📋 開啟事件 #{ev['event_id']} 完整頁面", key=f"goto_{ev['event_id']}"):
+                st.session_state["selected_event_id"] = ev["event_id"]
+                st.switch_page("pages/3_Event_Detail.py")
         with sc2:
             cur_status = ev.get("status", "pending_review")
             # 向下相容：舊資料可能還有 verified/closed，安全 fallback
