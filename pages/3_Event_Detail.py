@@ -30,8 +30,8 @@ event_options = {f"#{e['event_id']} {e.get('event_name','（未命名）')} [{e.
                  for e in events}
 _labels = list(event_options.keys())
 
-# 從 Dashboard 跳轉時帶入 selected_event_id
-_preselect_id = st.session_state.pop("selected_event_id", None)
+# 從 Dashboard 跳轉時帶入 selected_event_id，保留在 session_state 直到使用者自行切換
+_preselect_id = st.session_state.get("selected_event_id", None)
 _default_idx = 0
 if _preselect_id is not None:
     for i, label in enumerate(_labels):
@@ -41,6 +41,8 @@ if _preselect_id is not None:
 
 selected_label = st.selectbox("選擇事件", _labels, index=_default_idx)
 event_id = event_options[selected_label]
+# 更新 session_state 以跟蹤當前選擇（防止 rerun 跳回第一個）
+st.session_state["selected_event_id"] = event_id
 
 ev      = get_event(event_id)
 reports = get_reports_by_event(event_id)
