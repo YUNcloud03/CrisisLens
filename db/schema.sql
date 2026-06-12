@@ -180,7 +180,8 @@ CREATE TABLE IF NOT EXISTS model_runs (
     priority_rule_version       TEXT,
 
     report_id                   INTEGER,        -- 事後回填
-    notes                       TEXT
+    notes                       TEXT,
+    inference_latency_ms        REAL            -- 推論總耗時（毫秒）
 );
 
 -- ── Admin Action Log ─────────────────────────────────────────

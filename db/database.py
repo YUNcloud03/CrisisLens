@@ -157,6 +157,7 @@ _SQLITE_EXTRA_COLS = [
     ("users",   "permission_status",        "TEXT NOT NULL DEFAULT 'none'"),
     ("users",   "created_at",               "TEXT"),
     ("users",   "updated_at",               "TEXT"),
+    ("model_runs", "inference_latency_ms",  "REAL"),
 ]
 
 _PG_EXTRA_COLS = [

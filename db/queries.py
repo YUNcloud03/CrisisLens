@@ -604,14 +604,14 @@ def insert_model_run(data: dict) -> int:
         resnet_model_version,
         rag_index_version, rag_prompt_version,
         aggregation_rule_version, priority_rule_version,
-        report_id, notes
+        report_id, notes, inference_latency_ms
     ) VALUES (
         :run_time, :trigger,
         :clip_model_version, :clip_prompt_version,
         :resnet_model_version,
         :rag_index_version, :rag_prompt_version,
         :aggregation_rule_version, :priority_rule_version,
-        :report_id, :notes
+        :report_id, :notes, :inference_latency_ms
     )
     RETURNING run_id
     """
@@ -686,3 +686,53 @@ def mark_correction_for_retraining(correction_id: int, batch_id: str):
             "UPDATE admin_corrections SET used_for_retraining=1, retraining_batch_id=? WHERE correction_id=?",
             (batch_id, correction_id)
         )
+
+
+def get_correction_accuracy_stats() -> list[dict]:
+    """回傳所有 disaster_type 修正記錄，含原始預測與 ground truth，供計算線上準確率。"""
+    sql = """
+    SELECT
+        r.disaster_type        AS predicted,
+        ac.corrected_value     AS ground_truth,
+        r.clip_confidence,
+        r.model_agreement,
+        ac.corrected_at
+    FROM admin_corrections ac
+    JOIN reports r ON ac.report_id = r.report_id
+    WHERE ac.field_name = 'disaster_type'
+    ORDER BY ac.corrected_at DESC
+    """
+    with get_conn() as conn:
+        rows = conn.execute(sql).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_daily_confidence_stats(days: int = 14) -> list[dict]:
+    """回傳最近 N 天每日平均信心與 need_review 率，供 drift 偵測使用。"""
+    sql = """
+    SELECT
+        DATE(upload_time)    AS day,
+        COUNT(*)             AS n,
+        AVG(clip_confidence) AS avg_conf,
+        AVG(need_review)     AS review_rate
+    FROM reports
+    WHERE upload_time >= DATE('now', ?)
+    GROUP BY DATE(upload_time)
+    ORDER BY day
+    """
+    with get_conn() as conn:
+        rows = conn.execute(sql, (f"-{days} days",)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_confidence_distribution(limit: int = 200) -> list[dict]:
+    """回傳最近 N 筆推論的信心分佈資料，供趨勢圖使用。"""
+    sql = """
+    SELECT clip_confidence, model_agreement, need_review, disaster_type, upload_time
+    FROM reports
+    ORDER BY upload_time DESC
+    LIMIT ?
+    """
+    with get_conn() as conn:
+        rows = conn.execute(sql, (limit,)).fetchall()
+    return [dict(r) for r in rows]

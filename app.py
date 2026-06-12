@@ -527,6 +527,8 @@ if analyze_btn:
     clip_result   = None
     effnet_result = None
 
+    import time as _time
+    _infer_t0 = _time.perf_counter()
     with st.spinner("模型推論中..."):
         # ── CLIP ViT-L/14（零樣本，多 prompt 平均）──────────
         if _USE_CLIP:
@@ -546,6 +548,7 @@ if analyze_btn:
                 log_error("effnet_classify", str(_e), exc_info=True,
                           username=user.get("username"))
                 st.warning("⚠️ EfficientNet-B0 載入失敗，本次僅以 CLIP 結果為準。")
+    _inference_ms = round((_time.perf_counter() - _infer_t0) * 1000, 1)
 
     if clip_result is None and effnet_result is None:
         st.error("模型推論失敗，請稍後再試。")
@@ -705,6 +708,7 @@ if analysis and uploaded_file:
             "priority_rule_version": PRIORITY_RULE_VERSION,
             "report_id": None,
             "notes": f"submitted_by={user['username']}",
+            "inference_latency_ms": _inference_ms,
         })
 
         full_report = {
