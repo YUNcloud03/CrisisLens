@@ -98,9 +98,10 @@ def logout_button():
             "longitude_input",
             "gps_status",
             "gps_approved",
+            "selected_event_id",
         ):
             st.session_state.pop(key, None)
-        st.rerun()
+        st.switch_page("app.py")
 
 
 def render_sidebar_navigation(user: dict | None = None) -> None:

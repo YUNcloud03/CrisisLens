@@ -706,6 +706,10 @@ textarea::placeholder {
     color: #78869a !important;
 }
 
+[data-testid="InputInstructions"] {
+    display: none !important;
+}
+
 div.stButton > button,
 [data-testid="stFormSubmitButton"] button {
     background: #0ea5e9 !important;
