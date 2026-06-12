@@ -9,6 +9,7 @@ from db.database import init_db
 from db.queries import (
     get_event, get_reports_by_event, get_all_events,
     insert_admin_correction, get_admin_corrections,
+    update_report_disaster_type, update_event_disaster_type,
 )
 from utils.auth import require_admin
 from utils.ui_theme import apply_theme, badge, page_header, stat_card, top_pill
@@ -274,7 +275,17 @@ for i, rpt in enumerate(reports, 1):
                             "retraining_batch_id": None,
                             "notes":              None,
                         })
-                        st.success(f"已記錄修正：{_cur_type} → {_new_en}")
+                        # 同步更新 reports 表
+                        update_report_disaster_type(rpt["report_id"], _new_en)
+                        # 若此回報所屬事件的 disaster_type 也是舊值，一併更新事件名稱
+                        if ev.get("disaster_type") == _cur_type:
+                            from utils.config import CLASS_MAP
+                            _new_zh = CLASS_MAP.get(_new_en, _new_en)
+                            _loc = f"{ev.get('city','') or ''}{ev.get('district','') or ''}"
+                            _date = (ev.get("latest_report_time") or "")[:10]
+                            _new_name = f"{_date} {_loc} {_new_zh}事件".strip()
+                            update_event_disaster_type(ev["event_id"], _new_en, _new_name)
+                        st.success(f"已記錄修正：{_cur_type} → {_new_en}，事件名稱已更新")
                         st.rerun()
                     except Exception as _ce:
                         st.error(f"修正失敗：{_ce}")

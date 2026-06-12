@@ -152,6 +152,22 @@ def update_report_event(report_id: int, event_id: int):
         )
 
 
+def update_report_disaster_type(report_id: int, disaster_type: str):
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE reports SET disaster_type=? WHERE report_id=?",
+            (disaster_type, report_id)
+        )
+
+
+def update_event_disaster_type(event_id: int, disaster_type: str, event_name: str):
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE events SET disaster_type=?, event_name=? WHERE event_id=?",
+            (disaster_type, event_name, event_id)
+        )
+
+
 def get_reports_by_event(event_id: int) -> list[dict]:
     with get_conn() as conn:
         rows = conn.execute("""
