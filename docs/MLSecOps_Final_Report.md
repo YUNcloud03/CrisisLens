@@ -147,6 +147,9 @@ flowchart TB
 
 **生產資料每筆回報主要欄位（`db/schema.sql`）**：`image_path`、`latitude/longitude`、`city/district`、`disaster_type`、`clip_confidence`、`need_review`、`model_agreement`、`rag_advice` 等。
 
+![MEDIC 多任務標籤交叉分布](../picture/eda_02_label_crosstab.png)
+*圖 2-1：MEDIC 多任務標籤交叉分布（disaster type × damage_severity / informative / humanitarian，train）。CrisisLens 僅使用 disaster_types 任務作為分類目標，其餘多任務標籤未納入，但此圖顯示資料集本身的多標籤性質。*
+
 ### 2.4 Protected attributes（受保護屬性）
 
 - CrisisLens 的資料**不含人口統計受保護屬性**（性別、年齡、種族等），故不適用 SPD/DI 這類人口公平性指標。
@@ -175,8 +178,20 @@ flowchart TB
 | Landslide | 1,065 | 4.6% |
 | **Train 合計** | **23,075** | 100% |
 
+![各 split 類別張數與占比](../picture/eda_01_class_distribution.png)
+*圖 2-2：各 split 類別張數（左）與類別占比（右）。train 不平衡比 11.5x（Earthquake 12,296 最多、Landslide 1,065 最少）；三個 split 的類別占比相近，無明顯分布偏移。*
+
 - **類別不平衡**：最多/最少 = **11.55x**（Earthquake vs Landslide）→ 訓練以 `val_macro_f1` 選模、輔以資料增強緩解。
 - **已知偏誤**：地理偏誤（西半球事件為主，台灣場景準確率下降）、平台偏誤（社群照片）、時間偏誤（2012–2020）、**Hurricane≠Typhoon**（視覺型態差異 → 颱風類 recall 最弱 0.783，見 §3）、Earthquake 主導訓練集。
+
+![ImageNet 特徵 t-SNE](../picture/eda_07_tsne.png)
+*圖 2-3：ImageNet ResNet18 特徵的 t-SNE 投影（o=train，x=test）。各類有部分群聚，但邊界明顯重疊，顯示僅靠通用預訓練特徵不足以完全分離五類，需微調。*
+
+![kNN 特徵基線混淆矩陣](../picture/eda_08_knn_confusion.png)
+*圖 2-4：kNN-on-features 基線混淆矩陣（row-normalized，acc = 0.659）。**Hurricane/颱風對角僅 0.40**（0.23 被誤判為 Earthquake）為最弱類，早在基線階段即預示後續颱風 recall 偏低（§3 的 0.783）。*
+
+![各類代表樣本](../picture/eda_04_samples_grid.png)
+*圖 2-5：各類代表樣本。可見明顯的雜訊／非典型樣本——例如 Hurricane 類含政治迷因文字圖、Fire 類含 "PRAY FOR OREGON" 字卡，屬於社群媒體資料的品質風險，對應 §6 的 data poisoning 與穩健性討論。*
 
 ### 2.7 Splits & lineage（切分與血緣）
 
@@ -197,7 +212,16 @@ flowchart LR
   PRE --> SPLIT["train/val/test"]
 ```
 
+![重複與洩漏偵測](../picture/eda_06_duplicates.png)
+*圖 2-6：重複與洩漏偵測（md5 精確 vs dHash 近重複）。train 內近重複約 3,500+ 張、測試集洩漏 = 1.06%，據此執行去重（−3,616）與測試集洩漏排除（−60），避免評估高估。*
+
 - 增強：RandomResizedCrop scale=[0.5,1.0]、ColorJitter=[0.15,0.15,0.1]；img_size 256；選模指標 `val_macro_f1`。
+
+![影像尺寸與長寬比分布](../picture/eda_03_image_size.png)
+*圖 2-7：影像最短邊分布（僅 5.9% < 224px，紅線）、逐類最短邊 box、長寬比分布。多數影像短邊 > 256px，支持 Resize(288)→CenterCrop(256) 的前處理選擇。*
+
+![資料增強預覽](../picture/eda_09_aug_preview.png)
+*圖 2-8：訓練資料增強預覽（各類 orig + 5 種增強）。RandomResizedCrop + 水平翻轉 + ColorJitter + 旋轉，提升對拍攝角度/光線變化的穩健性。*
 
 ### 2.8 Security controls（資料面安全控制）
 
@@ -251,7 +275,10 @@ flowchart LR
 | 土石流 Landslide | 0.843 | **precision 0.694 偏低**（易誤判入此類） |
 
 - **雙主投票機制**：兩模型一致 → 高信心；不一致 → `model_agreement=0` 且 `need_review=1`，primary 取信心較高者。
-- Legacy 對照：DisasterCNN_v1 test macro-F1 **0.7012**（< EfficientNet 0.8375，故淘汰）。
+- Legacy 對照：DisasterCNN_v1 test macro-F1 **0.7012**（test acc 0.717）< EfficientNet（macro-F1 0.8375、test acc 0.847），故淘汰。
+
+![5 類測試集混淆矩陣](../picture/5class_cm_v2.png)
+*圖 3-1：5 類測試集混淆矩陣。左為 Custom CNN v2（Test Acc 0.717），右為 EfficientNet-B0-FT v2（Test Acc 0.847）。EfficientNet 對角顯著更強；颱風（Typhoon）列仍有 127 誤判為地震、123 誤判為淹水，與 §2 EDA 階段 kNN 基線中颱風為最弱類（圖 2-4）一致。*
 
 ```mermaid
 flowchart LR
