@@ -24,7 +24,7 @@ page_header(
 
 # ── 篩選 ─────────────────────────────────────────────────────
 fc1, fc2, fc3, fc4 = st.columns(4)
-with fc1: filter_type  = st.selectbox("災害類型", ["全部","Damaged Infrastructure","Fire Disaster","Land Disaster","Water Disaster","Non Damage"])
+with fc1: filter_type  = st.selectbox("災害類型", ["全部","Earthquake Damage","Flood","Fire","Typhoon or Storm Damage","Landslide"])
 with fc2: filter_city  = st.selectbox("縣市",     ["全部","台北市","新北市","桃園市","台中市","台南市","高雄市","花蓮縣","台東縣","其他"])
 with fc3: filter_pri   = st.selectbox("優先級",   ["全部","High","Medium","Low"])
 with fc4: filter_status= st.selectbox("狀態",     ["全部","pending_review","active","resolved","archived"])

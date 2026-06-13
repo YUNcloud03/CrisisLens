@@ -31,9 +31,10 @@ TIME_WINDOWS: dict[str, float] = {
     "weather_water": 48.0,   # 颱風 / 洪水：同一颱風可能持續 2 天
     "earth_land":    12.0,   # 地震 / 土石流：主震 + 餘震期
     "fire":           4.0,   # 火災：同一場火通常在 4 小時內持續回報
-    "other":          6.0,   # 其他：保守值
 }
 
+# 註：Damaged Infrastructure / Water Disaster / Land Disaster / Fire Disaster
+#     為舊 ResNet 命名，保留作 DB 歷史資料別名。
 DISASTER_GROUPS = {
     "weather_water": {
         "Flood", "Water Disaster", "Typhoon or Storm Damage",
@@ -43,9 +44,6 @@ DISASTER_GROUPS = {
     },
     "fire": {
         "Fire", "Fire Disaster",
-    },
-    "other": {
-        "Other or No Disaster", "Non Damage",
     },
 }
 
@@ -307,8 +305,6 @@ _TYPE_ZH: dict[str, str] = {
     "Typhoon or Storm Damage": "颱風",
     "Landslide":               "土石流",
     "Land Disaster":           "土石流",
-    "Other or No Disaster":    "其他災情",
-    "Non Damage":              "其他災情",
 }
 
 

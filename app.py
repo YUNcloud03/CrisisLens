@@ -49,8 +49,8 @@ from utils.versions import (
     CLIP_TOP2_GAP_THRESHOLD,
     CLIP_MODEL_VERSION,
     CLIP_PROMPT_VERSION,
-    CNN_MODEL_VERSION,
-    CNN_AUX_ENABLED,
+    CLIP_PROBE_VERSION,
+    EFFNET_MODEL_VERSION,
     PRIORITY_RULE_VERSION,
     RAG_INDEX_VERSION,
     RAG_PROMPT_VERSION,
@@ -237,9 +237,18 @@ with st.sidebar:
     st.markdown("### ⚙️ 模型設定")
     model_mode = st.selectbox(
         "使用模型",
-        ["CLIP ViT-L/14", "ResNet50", "兩者比較 (CLIP + ResNet50)", "自訓練 CNN"],
-        help="「兩者比較」同時執行 CLIP 與 ResNet50，顯示模型一致性（model_agreement）",
+        [
+            "雙主投票 (CLIP linear-probe + EfficientNet-B0)",
+            "CLIP linear-probe",
+            "CLIP ViT-L/14 (zero-shot)",
+            "EfficientNet-B0",
+        ],
+        help="「雙主投票」同時執行 CLIP 與 EfficientNet-B0：一致→高信心；不一致→need_review 並取信心較高者。"
+             "CLIP 預設走 linear-probe，權重未就緒時自動退回 zero-shot。",
     )
+    # 注意：選項標籤以子字串編碼行為（同 _USE_CLIP/_USE_EFFNET）。
+    # 兩個 probe 選項的標籤都必須含 "linear-probe"，否則改這裡的判斷。
+    _prefer_probe = "linear-probe" in model_mode
 
     prompt_set_key = list(PROMPT_SETS.keys())[1]  # B 預設（單 prompt 比較用）
 
@@ -271,7 +280,7 @@ with st.sidebar:
         st.warning("🛡️ Safety Guard：狀態讀取失敗")
 
     st.markdown("---")
-    st.caption("v2.0 · CLIP ViT-L/14 + ResNet50 + DisasterCNN + RAG")
+    st.caption("v2.1 · CLIP ViT-L/14 + EfficientNet-B0 雙主投票 + RAG")
 
 
 # ═══════════════════════════════════════════════════
@@ -283,9 +292,9 @@ if analysis and analysis.get("model_mode") != model_mode:
     analysis = None
 
 # 模式旗標（集中管理，避免散落多處的字串比對）
-_USE_CLIP   = "CLIP"   in model_mode or "比較" in model_mode
-_USE_RESNET = "ResNet" in model_mode or "比較" in model_mode
-_USE_CNN    = "CNN"    in model_mode
+# 「雙主投票 (CLIP + EfficientNet-B0)」同時包含兩個關鍵字 → 兩旗標皆 True
+_USE_CLIP   = "CLIP"         in model_mode
+_USE_EFFNET = "EfficientNet" in model_mode
 
 # ── 輸入區 ────────────────────────────────────────────────────
 left_col, right_col = st.columns([1.05, 0.95], gap="large")
@@ -393,17 +402,15 @@ with right_col:
     st.markdown('<div style="height:.85rem"></div>', unsafe_allow_html=True)
     if analysis:
         clip_preview   = analysis.get("clip_result")
-        resnet_preview = analysis.get("resnet_result")
-        cnn_preview    = analysis.get("cnn_result")
-        second_preview = resnet_preview or cnn_preview
-        second_label   = "ResNet50" if resnet_preview else "自訓練 CNN (DisasterCNN_v1)"
+        second_preview = analysis.get("effnet_result")
+        second_label   = "EfficientNet-B0"
         primary_preview = analysis["primary"]
         m_agree  = analysis.get("model_agreement", 1)
         n_review = analysis.get("need_review", 0)
         gap_val  = analysis.get("clip_top2_gap", 1.0)
 
         st.markdown('<div class="cl-panel-title">AI 辨識結果</div>', unsafe_allow_html=True)
-        if "比較" in analysis.get("model_mode", "") and clip_preview and second_preview:
+        if "雙主" in analysis.get("model_mode", "") and clip_preview and second_preview:
             _c1, _c2 = st.columns(2)
             with _c1:
                 render_ai_summary_card("CLIP ViT-L/14", clip_preview)
@@ -413,7 +420,7 @@ with right_col:
             render_ai_summary_card("主要辨識結果", primary_preview)
 
         # ── model_agreement & need_review badges ────────────
-        if second_preview:
+        if clip_preview and second_preview:
             _agree_color = "#4ade80" if m_agree else "#fb923c"
             _agree_icon  = "✅" if m_agree else "⚠️"
             _agree_text  = "模型一致（model_agreement = 1）" if m_agree else "模型不一致（model_agreement = 0）"
@@ -528,49 +535,59 @@ if analyze_btn:
         st.stop()
 
     clip_result   = None
-    resnet_result = None
-    cnn_result    = None
+    effnet_result = None
 
+    import time as _time
+    _infer_t0 = _time.perf_counter()
     with st.spinner("模型推論中..."):
-        # ── CLIP ViT-L/14（零樣本，多 prompt 平均）──────────
+        # ── CLIP ViT-L/14（linear-probe 優先，否則 zero-shot 多 prompt 平均）──
         if _USE_CLIP:
-            from models.clip_classifier import classify_multi_prompt as clip_classify
-            clip_result = clip_classify(img)
+            from models.clip_classifier import classify_clip
+            clip_result = classify_clip(img, prefer_probe=_prefer_probe)
 
-        # ── ResNet50 Linear Probe（fine-tuned on MEDIC）──────
-        if _USE_RESNET:
+        # ── EfficientNet-B0（v2 微調，5 類，雙主投票第二主）──
+        if _USE_EFFNET:
             try:
-                from models.resnet_baseline import classify as resnet_classify
-                resnet_result = resnet_classify(img)
-            except Exception as _e:
-                from utils.logger import log_error
-                log_error("resnet_classify", str(_e), exc_info=True,
-                          username=user.get("username"))
-                st.warning("⚠️ ResNet50 載入失敗，請確認 models/resnet50_linear.pth 存在。")
-
-        # ── DisasterCNN_v1（自訓練 4-block CNN）──────────────
-        if _USE_CNN and CNN_AUX_ENABLED:
-            try:
-                from models.custom_cnn_classifier import classify as cnn_classify, weights_exist
+                from models.efficientnet_classifier import classify as effnet_classify, weights_exist
                 if weights_exist():
-                    cnn_result = cnn_classify(img)
+                    effnet_result = effnet_classify(img)
+                else:
+                    st.warning("⚠️ 找不到 EfficientNet 權重，請確認 models/efficientnet_b0_5class_v2.pth 存在。")
             except Exception as _e:
                 from utils.logger import log_error
-                log_error("cnn_classify", str(_e), exc_info=True,
+                log_error("effnet_classify", str(_e), exc_info=True,
                           username=user.get("username"))
+                st.warning("⚠️ EfficientNet-B0 載入失敗，本次僅以 CLIP 結果為準。")
+    _inference_ms = round((_time.perf_counter() - _infer_t0) * 1000, 1)
 
-    primary = clip_result or resnet_result or cnn_result
+    if clip_result is not None and _USE_CLIP:
+        _m = clip_result.get("method", "zero_shot")
+        if _prefer_probe and _m == "zero_shot":
+            st.caption("ℹ️ linear probe 權重未就緒，已退回 zero-shot CLIP")
+        else:
+            _label = {"linear_probe": "CLIP：linear-probe（MEDIC 6→5）",
+                      "zero_shot": "CLIP：zero-shot 多 prompt"}.get(_m, _m)
+            st.caption(f"🔎 {_label}")
 
-    # ── 計算 model_agreement & need_review（分析階段就算）──
-    _second_model    = resnet_result or cnn_result
+    if clip_result is None and effnet_result is None:
+        st.error("模型推論失敗，請稍後再試。")
+        st.stop()
+
+    # ── 雙主投票：一致→高信心；不一致→need_review、primary 取信心高者 ──
     _model_agreement = 1
-    if clip_result and _second_model:
-        if _second_model.get("top_class_zh") != clip_result.get("top_class_zh"):
+    if clip_result and effnet_result:
+        if effnet_result.get("top_class_zh") != clip_result.get("top_class_zh"):
             _model_agreement = 0
+        primary = max(clip_result, effnet_result, key=lambda r: r["confidence"])
+    else:
+        primary = clip_result or effnet_result
 
-    _top3_for_gap = (clip_result or {}).get("top_3", [])
+    _top3_for_gap = (clip_result or effnet_result).get("top_3", [])
     _clip_gap     = (_top3_for_gap[0]["score"] - _top3_for_gap[1]["score"]
                      if len(_top3_for_gap) >= 2 else 1.0)
+    # 注意：信心/gap 閾值是針對 zero-shot CLIP 校準的。linear-probe 的溫度(~0.38)
+    # 會把信心顯著放大，使前兩項判準較少觸發；走 probe 時 need_review 主要靠模型不一致(第三項)。
+    # 若要 probe 路徑也能靠信心送審，需重新校準 CLIP_LOW_CONF_THRESHOLD / CLIP_TOP2_GAP_THRESHOLD。
     _need_review  = int(
         primary["confidence"] < CLIP_LOW_CONF_THRESHOLD
         or _clip_gap          < CLIP_TOP2_GAP_THRESHOLD
@@ -597,8 +614,7 @@ if analyze_btn:
 
     st.session_state["citizen_analysis"] = {
         "clip_result":       clip_result,
-        "resnet_result":     resnet_result,
-        "cnn_result":        cnn_result,
+        "effnet_result":     effnet_result,
         "primary":           primary,
         "rag_result":        rag_result,
         "model_mode":        model_mode,
@@ -608,6 +624,7 @@ if analyze_btn:
         "input_safety":      _input_check,
         "output_safety":     _output_check,
         "image_safety":      _image_check,
+        "inference_ms":      _inference_ms,
     }
     st.rerun()
 
@@ -638,10 +655,9 @@ if analysis and uploaded_file:
 
         primary       = analysis["primary"]
         clip_result   = analysis.get("clip_result") or primary
-        resnet_result = analysis.get("resnet_result")
-        cnn_result    = analysis.get("cnn_result")
-        # 用於 DB：優先記錄 ResNet50，若無則 CustomCNN
-        _aux_result   = resnet_result or cnn_result
+        effnet_result = analysis.get("effnet_result")
+        # 用於 DB：第二主模型 = EfficientNet-B0（沿用 resnet_* 欄位，免 schema migration）
+        _aux_result   = effnet_result
         rag_result    = analysis["rag_result"]
         top3          = (clip_result or primary).get("top_3", [])
 
@@ -700,17 +716,19 @@ if analysis and uploaded_file:
         model_agreement  = analysis.get("model_agreement", 1)
         need_review_flag = analysis.get("need_review", 0)
 
-        # model_run 版本記錄（ResNet50 優先，否則 CNN）
-        from utils.versions import CNN_MODEL_VERSION as _CNN_VER
-        _RESNET_VER = "resnet50-linear-probe-medic-5class-v1"
-        _aux_ver = _RESNET_VER if resnet_result else (_CNN_VER if cnn_result else None)
+        # model_run 版本記錄（第二主 = EfficientNet-B0；欄位名沿用 resnet_*）
+        _aux_ver = EFFNET_MODEL_VERSION if effnet_result else None
+        # CLIP 版本：實際走 linear-probe 時記 probe 版，否則記 zero-shot 版
+        _clip_prompt_ver = (CLIP_PROBE_VERSION
+                            if clip_result and clip_result.get("method") == "linear_probe"
+                            else CLIP_PROMPT_VERSION)
 
         now = datetime.now().isoformat(timespec="seconds")
         run_id = insert_model_run({
             "run_time": now,
             "trigger": "submit",
             "clip_model_version": CLIP_MODEL_VERSION,
-            "clip_prompt_version": CLIP_PROMPT_VERSION,
+            "clip_prompt_version": _clip_prompt_ver,
             "resnet_model_version": _aux_ver,
             "rag_index_version": RAG_INDEX_VERSION,
             "rag_prompt_version": RAG_PROMPT_VERSION,
@@ -718,6 +736,7 @@ if analysis and uploaded_file:
             "priority_rule_version": PRIORITY_RULE_VERSION,
             "report_id": None,
             "notes": f"submitted_by={user['username']}",
+            "inference_latency_ms": analysis.get("inference_ms"),
         })
 
         full_report = {
@@ -737,11 +756,12 @@ if analysis and uploaded_file:
             "event_time": now,
             "upload_time": now,
             "clip_model_version": CLIP_MODEL_VERSION,
-            "clip_prompt_version": CLIP_PROMPT_VERSION,
+            "clip_prompt_version": _clip_prompt_ver,
             "clip_disaster_type": primary["top_class"],
             "clip_confidence": primary["confidence"],
             "clip_top3": json.dumps(top3, ensure_ascii=False),
             "top3_predictions": json.dumps(top3, ensure_ascii=False),
+            # resnet_* 欄位自 v2.1 起存放第二主模型（EfficientNet-B0）結果
             "resnet_model_version": _aux_ver,
             "resnet_disaster_type": _aux_result["top_class"] if _aux_result else None,
             "resnet_confidence":    _aux_result["confidence"] if _aux_result else None,
