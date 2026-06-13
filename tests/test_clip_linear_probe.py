@@ -107,3 +107,16 @@ def test_classify_clip_prefer_probe_false_uses_zero_shot(monkeypatch):
                                      "confidence": 0.7, "top_3": [], "all_scores": {}})
     out = cc.classify_clip(object(), prefer_probe=False)
     assert out["method"] == "zero_shot"
+
+
+def test_classify_clip_falls_back_on_probe_exception(monkeypatch):
+    # probe 可用，但推論時丟例外 → 必須退回 zero-shot（最關鍵的執行期安全路徑）
+    monkeypatch.setattr(cc, "_load_linear_head", lambda: ("dummy_head", 1.0))
+    monkeypatch.setattr(cc, "classify_linear_probe",
+                        lambda img: (_ for _ in ()).throw(RuntimeError("shape mismatch")))
+    monkeypatch.setattr(cc, "classify_multi_prompt",
+                        lambda img: {"top_class": "Flood", "top_class_zh": "淹水",
+                                     "confidence": 0.9, "top_3": [], "all_scores": {}})
+    out = cc.classify_clip(object(), prefer_probe=True)
+    assert out["method"] == "zero_shot"
+    assert out["top_class"] == "Flood"

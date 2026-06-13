@@ -275,8 +275,10 @@ def classify_clip(image: Image.Image, prefer_probe: bool = True) -> dict:
     if prefer_probe and _load_linear_head() is not None:
         try:
             return classify_linear_probe(image)
-        except Exception:
-            pass  # 退回 zero-shot
+        except Exception as e:
+            logging.getLogger(__name__).warning(
+                "classify_linear_probe 推論失敗，退回 zero-shot：%s", e
+            )
     result = classify_multi_prompt(image)
     result["method"] = "zero_shot"
     return result
