@@ -220,8 +220,9 @@ for i, rpt in enumerate(reports, 1):
         _DISASTER_TYPES_EN = [
             "Earthquake Damage", "Flood", "Fire",
             "Typhoon or Storm Damage", "Landslide",
+            "No Disaster",
         ]
-        _DISASTER_TYPES_ZH = ["地震或建築損壞", "淹水", "火災", "颱風或強風災損", "土石流或坍方"]
+        _DISASTER_TYPES_ZH = ["地震或建築損壞", "淹水", "火災", "颱風或強風災損", "土石流或坍方", "無災害"]
         _TYPE_LABELS = [f"{zh}（{en}）" for zh, en in zip(_DISASTER_TYPES_ZH, _DISASTER_TYPES_EN)]
 
         # 現有修正記錄

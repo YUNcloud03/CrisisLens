@@ -32,6 +32,7 @@ CLASSES_ZH = [
 ]
 
 CLASS_MAP = dict(zip(CLASSES_EN, CLASSES_ZH))
+CLASS_MAP["No Disaster"] = "無災害"
 
 # ── Prompt sets ───────────────────────────────────────────
 PROMPT_SETS = {
