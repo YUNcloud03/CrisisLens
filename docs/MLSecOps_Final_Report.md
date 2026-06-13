@@ -293,10 +293,39 @@ flowchart LR
 ### 3.5 Fairness & XAI（公平性與可解釋性）
 
 - **公平性（slice）**：無人口受保護屬性，改以**逐類別 recall** 作為 slice 公平性指標。目前 slice 不均：颱風 recall 0.783 最弱、Landslide precision 0.694 偏低 → 對策為增樣/重採樣與颱風在地資料補強（§9）。
-- **可解釋性**：
-  - CLIP zero-shot 路徑天然可解釋（影像↔文字 prompt 的相似度），輸出 Top-3 類別 + 信心條。
-  - 雙主投票一致性本身即一種「決策信賴度」訊號。
-  - **缺口**：尚未導入 SHAP / Grad-CAM 等視覺歸因（課程在 tabular 用 SHAP/LIME，視覺對應為 Grad-CAM）→ 列為未來工作（§9）。
+#### 可解釋性（XAI）— 方法論與實作規劃
+
+依課程 Fairness/XAI add-on（Slides 7–10），XAI 在 MLSecOps 中是「**控制證據**」，分兩種範圍、兩種方法，並作為安全訊號使用：
+
+- **Local**：解釋單一決策（「這張為何被判為 X？」）→ 供申訴、admin 人工審核、案件稽核。
+- **Global**：解釋整體行為（「哪些特徵驅動各類？」）→ 供模型驗證、proxy 偵測、feature leakage 檢查、drift 監控。
+- **安全訊號**：XAI 可揭露 proxy 特徵、label leakage、對不穩定資料的過度依賴、retraining 後的異常 drift、對抗/poison pattern。
+
+課程在 tabular（貸款）用 **SHAP**（加性 Shapley 貢獻，`prediction = baseline + Σ feature 貢獻`）與 **LIME**（局部擾動 + 線性代理）。CrisisLens 是**影像模型**，須把這套對應到視覺歸因方法：
+
+**(1) 課程 tabular 方法 → CrisisLens 視覺方法對應**
+
+| 課程方法（tabular） | CrisisLens 視覺對應 | 適用模型 | 揭示什麼 |
+|---|---|---|---|
+| SHAP global summary | 逐類 Grad-CAM 熱區彙整、影像統計特徵的 SHAP（DeepSHAP / GradientSHAP） | EfficientNet | 哪些區域/紋理系統性驅動各類 |
+| SHAP/LIME local | 單張 Grad-CAM / Integrated Gradients / occlusion sensitivity | EfficientNet | 這張影像哪塊像素支持該預測 |
+| LIME local surrogate | 影像版 LIME（superpixel 分割 → 擾動 → 線性代理） | 任意黑箱（含 EfficientNet） | 哪些 superpixel 支持/反對該類 |
+| （CLIP 特有，無 tabular 對應） | 各 prompt 的 image-text cosine 相似度、CLIP 相似度顯著圖 | CLIP | 哪條文字描述最匹配、語意依據 |
+
+**(2) 具體做法（依課程 measure → diagnose → mitigate → validate → document 流程）**
+
+1. **Local**：對每筆 `need_review` 案件，產生 EfficientNet Grad-CAM 熱圖 + CLIP 各 prompt 相似度，附在 admin 審核介面（對應課程「local explanation 供 manual review / case audit」）。
+2. **Global**：對測試集逐類彙整 Grad-CAM 熱區找系統性依賴；對影像亮度/色彩等統計特徵（見 §2 EDA）做 SHAP summary，檢查 proxy 與 leakage。
+3. **安全訊號（重點）**：用 Grad-CAM / occlusion 檢查 §2 EDA 發現的雜訊樣本（圖 2-5 的政治迷因、"PRAY FOR OREGON" 文字卡）——**模型是否依賴影像上的文字疊圖而非災害場景本身？** 若是，即為 spurious correlation / 資料中毒弱點，須回到資料清理（diagnose→mitigate）。亦用於偵測對抗 pattern 與 retraining 後的 attention drift。
+4. **版本化**：依課程對 LIME「不穩、須對重要案件版本化並可重複」的提醒，解釋結果隨模型版本記錄（連動 `model_runs`）。
+5. **交付物（對齊 Workshop 提交清單）**：SHAP global summary + 每類一張 local Grad-CAM/LIME（至少含一筆 `need_review` 案例），並輔以文字討論。
+
+**(3) 現況 vs 規劃**
+
+| 狀態 | 內容 |
+|---|---|
+| 已實作 | CLIP 各 prompt 的 image-text 相似度 → Top-3 + 信心條（UI）；雙主投票一致性作為「決策信賴度」訊號。屬 inherent、coarse 的解釋。 |
+| 未實作（→ §9 未來工作） | Grad-CAM / Integrated Gradients / 影像 LIME / 影像 SHAP；global 熱區彙整；以 XAI 檢查文字疊圖依賴的安全訊號流程。 |
 
 ### 3.6 Security testing（安全測試）
 
