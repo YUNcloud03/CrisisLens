@@ -455,3 +455,132 @@ flowchart LR
 | Security | 七層防禦 + 護欄 | §6 | 無正式紅隊測試 |
 
 ---
+
+## 6. 威脅模型與資安（Threat Model）
+
+> 本章整合專案既有的資安分析文件（`docs/security_paper.docx`）並對齊課程的**七層防禦**（AI Security Deck, Slide 24）與 MITRE ATLAS / OWASP LLM Top 10。
+
+### 6.1 七層防禦對照
+
+| 防禦層 | 控制目標 | CrisisLens 對應控制 | 稽核產出物 |
+|---|---|---|---|
+| Governance | 政策 / 風險責任 | admin 審核流程、人類最終裁量、免責聲明 | 本報告、需審核紀錄 |
+| Data | 來源 / PII / poisoning | 固定學術資料集、`strip_exif`、不受信任輸入經護欄 | Data Card（§2） |
+| Model | 簽章 / 穩健性 | 雙主投票、版本化、`weights_only` 載入 | Model Card（§3） |
+| Application | 輸入驗證 / 護欄 | ShieldGemma 三檢查點、限速 10/hr | 安全標籤紀錄 |
+| RAG | 檢索存取 / 來源引用 | 靜態版本控管 SOP、admin-only 重建、index 版本紀錄 | RAG 索引版本 |
+| Agent | 工具權限 | （CrisisLens 無自主 agent / 工具呼叫）→ 風險面小 | — |
+| Supply Chain | SBOM / 雜湊 / 載入安全 | `torch.load(weights_only=True)`；**缺口：resnet_baseline.py 未加** | 版本表（§3 附錄） |
+
+### 6.2 攻擊面與防禦
+
+#### 6.2.1 對抗樣本（Adversarial / FGSM·PGD）
+
+- **威脅**：對 CLIP 或 EfficientNet 加入難以察覺的擾動，使真實災害被誤判為其他類，或輸出低信心模糊預測，弱化/誤導警報。
+- **防禦**：雙主投票（ViT vs CNN，架構與訓練目標獨立 → 難同時騙過）＋ 信心門檻（<0.50）＋ Top-2 gap（<0.15）＋ 模型不一致 → 一律 `need_review`，進入人工審核（HITL）。
+- 文獻：Goodfellow et al. (2015) FGSM；Madry et al. (2018) PGD。
+
+#### 6.2.2 RAG 中毒（RAG Poisoning）
+
+- **威脅**：竄改 SOP 文件並重建 FAISS 索引，使檢索回傳危險建議（例：「不要打 119」）。
+- **防禦**：靜態、版本控管的 6 份 SOP（非動態可寫入）；僅伺服器端 `build_index` 可重建、無 API/UI 暴露；`faiss-multilingual-minilm-v1` index 版本記入 `model_runs`；輸出附「僅供初步參考，不代表官方災害判定」免責橫幅。
+- 文獻：Zou et al. (2024)；Greshake et al. (2023)。
+
+#### 6.2.3 Prompt Injection
+
+- **威脅**：使用者描述欄植入「忽略先前指令…」劫持 Gemini 輸出。
+- **防禦**：3 層 ShieldGemma（§6.3）＋ 結構化模板以標籤欄位分隔 user_description（**專用 XML/delimiter 隔離塊規劃中**）＋ 輸出檢查不安全則退回 fallback ＋ 限速 10/hr。
+- 文獻：Perez & Ribeiro (2022)。
+
+#### 6.2.4 EXIF GPS 洩漏
+
+- **威脅**：上傳照片的 EXIF GPS 暴露回報者住家/工作地座標（GDPR Art.4(1) 視為個資）。
+- **防禦**：`strip_exif()`（`utils/image_utils.py`）在儲存/推論前以逐像素重建影像，移除所有 EXIF；`load_image()` 每次上傳必呼叫；GPS 不寫入 DB/Blob。
+
+#### 6.2.5 供應鏈（Supply Chain）
+
+- **防禦**：`torch.load(weights_only=True)` 於 CLIP / EfficientNet / CustomCNN，防反序列化任意程式碼。
+- **已知缺口**：`models/resnet_baseline.py` 的 `torch.load` 未加 `weights_only` → 列為殘餘風險與修補建議（§9）。雖 ResNet50 已淘汰、預設不載入，仍應補齊以符合一致的供應鏈控制。
+
+### 6.3 ShieldGemma 安全護欄（三檢查點）
+
+| 檢查點 | 函式 | 時機 | 處置 |
+|---|---|---|---|
+| 輸入安全 | `check_user_input` | 使用者描述 | safe / review / block |
+| 影像安全 | `check_image_safety` | 上傳影像（Gemini Vision） | safe / review / block |
+| 輸出安全 | `check_rag_output` | RAG 建議 | safe / sanitize / block |
+
+- **後端優先鏈**：keyword 規則（永遠可用、近零延遲）→ 本機 ShieldGemma（選用）→ Gemini API（語意後端）。
+- **門檻**：ShieldGemma P(harmful) > 0.70 → block；> 0.40 → review。
+- 攔截範圍：prompt injection、仇恨/垃圾、URL 釣魚（block）；身分證/手機/精確地址、兒少、血腥（review）；危險自救建議（output sanitize）。
+
+### 6.4 認證與儲存安全
+
+- **認證**：密碼以 PBKDF2-SHA256（120,000 iterations）+ 隨機 salt 雜湊（`utils/auth.py`）；admin 權限檢查 `require_admin()`。
+- **儲存**：影像存 Azure Blob 或本機 `uploads/reports/`，JPEG q85；影像 admin-only 存取。
+- **限速**：每使用者每小時最多 10 筆回報（`_RATE_LIMIT = 10`），抑制濫用與自動化注入。
+
+### 6.5 MITRE ATLAS / OWASP LLM Top 10 對應
+
+| CrisisLens 威脅 | MITRE ATLAS（技術） | OWASP LLM Top 10 (2025) | 緩解（章節） |
+|---|---|---|---|
+| 對抗樣本 | Evade ML Model | — | 雙主投票 + need_review（§6.2.1） |
+| RAG 中毒 | Poison Training Data | LLM04 Data & Model Poisoning、LLM08 Vector/Embedding | 靜態 KB + 版本紀錄（§6.2.2） |
+| Prompt injection | LLM Prompt Injection | LLM01 Prompt Injection | ShieldGemma + 模板隔離（§6.2.3） |
+| GPS/PII 洩漏 | Exfiltration via ML Inference | LLM02 Sensitive Info Disclosure | strip_exif + H3（§6.2.4、§2.5） |
+| 不安全模型載入 | ML Supply Chain Compromise | LLM03 Supply Chain | weights_only（§6.2.5） |
+| 有害建議輸出 | — | LLM05 Improper Output Handling、LLM09 Misinformation | 輸出檢查 + 免責 + fallback |
+| 濫用 / DoS | — | LLM10 Unbounded Consumption | 限速 10/hr |
+
+---
+
+## 7. MLOps 監控與部署 Gate（Test Report）
+
+> 對應課程「每階段產生證據、監控、可回退」的部署原則（AI Security Deck, Slides 8/9/12）。
+
+### 7.1 監控指標（`pages/6_MLOps.py`）
+
+- 推論記錄數、人工修正數、待審核（`need_review`）數與待審核率、推論延遲、信心 drift、各模型版本摘要。
+
+### 7.2 `model_runs` 版本紀錄（`db/schema.sql`）
+
+- 每次推論寫入：`clip_model_version`、`clip_prompt_version`（走 linear-probe 時記 `CLIP_PROBE_VERSION`）、`resnet_model_version`（現存 EfficientNet 版本）、RAG/聚合/優先級規則版本、`inference_latency_ms`。→ 支援 drift 追蹤與稽核。
+
+### 7.3 need_review 判斷邏輯
+
+```python
+_need_review = int(
+    primary["confidence"] < CLIP_LOW_CONF_THRESHOLD   # 0.50
+    or _clip_gap          < CLIP_TOP2_GAP_THRESHOLD   # 0.15
+    or _model_agreement   == 0                         # CLIP ≠ EfficientNet
+)
+```
+
+> 註：linear-probe temperature（0.38）會放大信心，使前兩項較少觸發；走 probe 時 `need_review` 主要靠模型不一致（§3.7）。
+
+### 7.4 部署 Gate（deploy / improve / block）
+
+| 判準 | 狀態 |
+|---|---|
+| 效能 | EfficientNet macro-F1 0.8375 ≫ legacy 0.7012 → **deploy** |
+| 安全控制 | ShieldGemma + weights_only + 限速 已就位 |
+| 監控擁有者 | admin |
+| 殘餘風險 | linear-probe 校準近似 → 保留 zero-shot 退路 + 可 A/B（**improve** 配套） |
+
+### 7.5 Retraining 觸發（`docs/system_card.md`）
+
+- `need_review` 率 > 30%（連續 100 筆回報）；或 model agreement < 60%（持續 7 天）→ 觸發再訓練流程。
+
+### 7.6 Rollback
+
+- 權重版本化；linear-probe 載入失敗自動退回 zero-shot；模型選單可手動切回 zero-shot / 單模型。
+
+### 7.7 自動化測試證據
+
+- `tests/test_clip_linear_probe.py`：**8 passed**，涵蓋切片邏輯、權重載入、`classify_clip` 路由、推論失敗 fallback。作為 CI 層級的回歸驗證。
+
+### 7.8 監控資料來源
+
+- `tools/seed_mlops_demo.py` 可生成示範資料（14 天、含人工修正）供儀表板展示。
+
+---
