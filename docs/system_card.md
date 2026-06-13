@@ -1,7 +1,7 @@
-# System Card — CrisisLens v2.0
+# System Card — CrisisLens v3.0
 
 > **Format**: System-level AI Transparency Document  
-> **Last Updated**: 2026-06-08  
+> **Last Updated**: 2026-06-13  
 > **Platform**: CrisisLens Disaster Classification & Response Advisory System  
 > **SDG Alignment**: SDG 11 (Sustainable Cities), SDG 13 (Climate Action)
 
@@ -32,17 +32,20 @@ app.py（主頁）
     ├── 填寫災情資訊（人數、受困、受傷、道路、停電）
     │
     ├── [AI 辨識並產生建議] 按鈕
-    │       ├── CLIP ViT-L/14 多描述投票推論
-    │       ├── （選）DisasterCNN_v1 輔助驗證
-    │       └── RAG → Gemini 生成防災建議
+    │       ├── ShieldGemma 安全檢查（使用者輸入 + 影像）
+    │       ├── 雙主投票推論（CLIP linear-probe 優先/zero-shot 退路 + EfficientNet-B0）
+    │       ├── need_review 判斷（信心度 / Top-2 gap / 模型一致性）
+    │       ├── RAG → Gemini gemini-2.5-flash 生成防災建議
+    │       └── ShieldGemma 輸出安全（sanitize）
     │             ↓
     │        右側顯示：辨識結果 + 防災建議 + Safety 提醒
     │
     └── [送出災情回報] 按鈕
-            ├── 圖片儲存（Azure Blob / 本機）
+            ├── 圖片儲存（Azure Blob / 本機 uploads/reports/，JPEG q85）
             ├── 計算 report_severity_score
             ├── 事件聚合（disaster group + 地點 + 時間窗口）
-            └── 更新 grid_summary（H3 / district / city）
+            ├── 更新 grid_summary（H3 / district / city）
+            └── MLOps 監控（model_runs 含 inference_latency_ms）
 ```
 
 **注意**：
@@ -59,6 +62,7 @@ app.py（主頁）
 | `3_Event_Detail.py` | 單一事件詳細（所有 reports、地圖、可信度評等） |
 | `4_H3_Heatmap.py` | Multi-scale H3 熱區地圖（可過濾 resolved 事件） |
 | `5_Permission_Review.py` | 審核 pending 使用者的 admin 申請 |
+| `6_MLOps.py` | 即時效能監控（延遲、信心 drift、Retraining 觸發） |
 
 ---
 
@@ -85,30 +89,67 @@ app.py（主頁）
 上傳圖片 (PIL.Image)
     │
     ▼
-CLIP ViT-L/14（主分類器）
-  多描述投票：6 classes × 4–7 prompts → cosine sim → mean → ×100 → softmax
-    │
-    ├── confidence < 0.50    → need_review = 1
-    ├── Top-1/Top-2 gap < 0.15 → need_review = 1
-    │
-    ▼
-DisasterCNN_v1（輔助驗證，若 CNN_AUX_ENABLED=True）
-  4-block CNN → softmax → top_class_zh
-    │
-    └── clip_class_zh ≠ cnn_class_zh → model_agreement = 0, need_review = 1
+ShieldGemma 安全前置檢查
+  check_user_input（使用者描述文字）
+  check_image_safety（影像，Gemini Vision）
+  → blocked 時立即終止，review 時標記後繼續
     │
     ▼
-Primary = CLIP 結果（CNN 只觸發 review，不覆蓋 CLIP）
+雙主投票（Dual-Primary Voting）
+  ├── CLIP ViT-L/14
+  │     linear-probe（linear-probe-medic-6to5-v1）優先
+  │     zero-shot 多描述平均（multi-prompt-avg-5class-v2）退路
+  │     5 classes × prompts → cosine sim → mean → ×100 → softmax
+  └── EfficientNet-B0（efficientnet-b0-medic-5class-v2）
+        5 類微調，獨立 softmax 輸出
+    │
+    ├── confidence < 0.50       → need_review = 1
+    ├── Top-1/Top-2 gap < 0.15  → need_review = 1
+    ├── model_agreement == 0
+    │     (CLIP top_class ≠ EfficientNet top_class) → need_review = 1
+    │
+    ▼
+Primary = max(CLIP, EfficientNet) by confidence
+（不一致時 need_review = 1，primary 取信心較高者）
     │
     ▼
 RAG 防災建議
-  FAISS Top-4 chunks → Gemini 2.0 Flash → 條列建議
+  FAISS Top-4 chunks → Gemini gemini-2.5-flash → 條列建議
   （無 API key 時 fallback 至內建指引）
+    │
+    ▼
+ShieldGemma 輸出安全檢查
+  check_rag_output → sanitize / block 時替換危險行數
 ```
+
+**分類類別（5 類）**：淹水、颱風、地震、土石流、火災
 
 ---
 
-## 4. 事件聚合規則
+## 4. ShieldGemma 安全三檢查點
+
+來源：`safety/shieldgemma_guard.py`
+
+| 檢查點 | 函式 | 說明 |
+|--------|------|------|
+| 輸入守衛 | `check_user_input(text)` | 檢查使用者描述文字 |
+| 影像守衛 | `check_image_safety(pil_image)` | Gemini Vision 審查上傳圖片 |
+| 輸出守衛 | `check_rag_output(advice_list)` | 審查 RAG 產生的防災建議 |
+
+**後端優先鏈**：keyword 規則 → 本機 ShieldGemma（`USE_LOCAL_SHIELDGEMMA=true` 時）→ Gemini API
+
+**判定門檻**（本機 ShieldGemma）：
+- P(harmful) > 0.70 → `block`
+- P(harmful) > 0.40 → `review`
+- 否則 → `safe`
+
+**回傳格式**：`{label, blocked, reason, method}`
+
+輸出守衛的 `block` 結果自動降級為 `sanitize`（逐行替換危險措辭，不整批封鎖）。
+
+---
+
+## 5. 事件聚合規則
 
 版本：`disaster-group-distance-timewindow-v4`
 
@@ -126,7 +167,7 @@ RAG 防災建議
 | 其他 | 8 小時 |
 
 3. **位置條件**（任一成立）：
-   - H3 cell 相同或相鄰（GPS 模式）
+   - H3 cell 相同或相鄰（H3 resolution 9，街區級 ~174m；GPS 模式）
    - Haversine 距離 ≤ 300m（GPS 模式）
    - 同 city + district（無 GPS fallback）
 
@@ -134,7 +175,9 @@ RAG 防災建議
 
 ---
 
-## 5. Priority Score 計算
+## 6. Priority Score 計算
+
+版本：`svcp-weighted-v2`（Severity + Vulnerability + Credibility + Priority）
 
 ```
 Priority Score = Severity × 0.50 + Vulnerability × 0.30 + Credibility × 0.20
@@ -153,7 +196,7 @@ Priority Score = Severity × 0.50 + Vulnerability × 0.30 + Credibility × 0.20
 
 ---
 
-## 6. H3 熱區地圖
+## 7. H3 熱區地圖
 
 - **H3 Resolution**: Res 5（縣市）→ Res 7（鄉鎮）→ Res 9（街區 ~174m）
 - **Zoom-based switching**: 地圖縮放等級決定顯示哪個 resolution
@@ -169,7 +212,7 @@ Priority Score = Severity × 0.50 + Vulnerability × 0.30 + Credibility × 0.20
 
 ---
 
-## 7. 事件狀態說明
+## 8. 事件狀態說明
 
 | 狀態 | 說明 | 誰可以設定 |
 |------|------|-----------|
@@ -182,7 +225,7 @@ Priority Score = Severity × 0.50 + Vulnerability × 0.30 + Credibility × 0.20
 
 ---
 
-## 8. RAG 應變建議來源
+## 9. RAG 應變建議來源
 
 | 知識庫文件 | 涵蓋災害 |
 |-----------|---------|
@@ -200,18 +243,19 @@ Priority Score = Severity × 0.50 + Vulnerability × 0.30 + Credibility × 0.20
 
 ---
 
-## 9. AI Safety 聲明
+## 10. AI Safety 聲明
 
-> ⚠️ **本系統分類與建議僅供初步參考，不代表官方災害判定。**
+> **本系統分類與建議僅供初步參考，不代表官方災害判定。**
 
 - 若有人員受困、受傷或有立即危險，請**優先撥打 119 / 110**
-- CLIP 信心度 < 0.50 或 Top-2 gap < 0.15 的回報一律標記 `need_review = 1`
+- ShieldGemma 三層安全守衛覆蓋輸入文字、影像內容、RAG 輸出建議
+- confidence < 0.50、Top-2 gap < 0.15 或 model_agreement == 0 的回報一律標記 `need_review = 1`
 - `need_review` 回報在 credibility 計算中權重較低，降低對 Priority Score 的影響
 - 所有 AI 建議均加上 disclaimer：「本系統分類與建議僅供初步參考，不代表官方災害判定」
 
 ---
 
-## 10. 安全與隱私
+## 11. 安全與隱私
 
 | 風險 | 緩解措施 |
 |------|---------|
@@ -221,28 +265,47 @@ Priority Score = Severity × 0.50 + Vulnerability × 0.30 + Credibility × 0.20
 | Admin 操作可審計 | `admin_action_logs` 記錄所有狀態變更 |
 | 錯誤日誌 | `error_logs` 持久化至 DB，`context` 欄位標示模組 |
 | API Key 不暴露前端 | 所有 API 呼叫在 server side 執行 |
-| 對抗攻擊 | CLIP 和 CNN 均有信心度閾值；低信心一律送人工審查 |
+| 對抗攻擊 | CLIP 和 EfficientNet-B0 均有信心度閾值；低信心一律送人工審查 |
+| 圖片儲存 | Azure Blob Storage 或本機 uploads/reports/（JPEG quality 85） |
 
 ---
 
-## 11. MLOps 追蹤
+## 12. MLOps 追蹤
 
 每次推論寫入 `model_runs` 表：
 
 ```python
 {
-  "clip_model_version":      "clip-vitl14-v1",
-  "clip_prompt_version":     "multi-prompt-avg-v1",
-  "resnet_model_version":    "custom-cnn-medic-6class-v1",
-  "rag_index_version":       "faiss-multilingual-minilm-v1",
-  "rag_prompt_version":      "gemini-flash-rag-v1",
-  "aggregation_rule_version":"disaster-group-distance-timewindow-v4",
-  "priority_rule_version":   "svcp-weighted-v2",
+  "clip_model_version":       "clip-vitl14-v1",
+  "clip_prompt_version":      "multi-prompt-avg-5class-v2",   # zero-shot 路徑
+                           # "linear-probe-medic-6to5-v1",    # linear-probe 路徑
+  "resnet_model_version":     "efficientnet-b0-medic-5class-v2",  # 第二主（欄位沿用 resnet_*）
+  "rag_index_version":        "faiss-multilingual-minilm-v1",
+  "rag_prompt_version":       "gemini-flash-rag-v1",
+  "aggregation_rule_version": "disaster-group-distance-timewindow-v4",
+  "priority_rule_version":    "svcp-weighted-v2",
+  "inference_latency_ms":     <float>,   # 端對端推論耗時（毫秒）
 }
 ```
 
 `admin_corrections` 表記錄人工修正，`used_for_retraining = 1` 的資料可用於未來 retraining。
 
-**Retraining 觸發建議**：
-- `need_review` 率 > 30% 超過 100 筆連續回報
-- Model agreement 率 < 60% 持續 7 天
+**Retraining 觸發條件**：
+- `need_review` 率 > 30%（連續 100 筆回報）
+- Model agreement 率 < 60%（持續 7 天）
+
+---
+
+## 13. 版本對照表
+
+| 元件 | 版本字串 |
+|------|---------|
+| CLIP 模型 | `clip-vitl14-v1` |
+| CLIP Prompt（zero-shot） | `multi-prompt-avg-5class-v2` |
+| CLIP linear-probe | `linear-probe-medic-6to5-v1` |
+| EfficientNet-B0（雙主第二主） | `efficientnet-b0-medic-5class-v2` |
+| Custom CNN（legacy，已淘汰） | `custom-cnn-medic-5class-v2` |
+| RAG Index | `faiss-multilingual-minilm-v1` |
+| RAG Prompt | `gemini-flash-rag-v1` |
+| 事件聚合規則 | `disaster-group-distance-timewindow-v4` |
+| Priority Score 規則 | `svcp-weighted-v2` |
