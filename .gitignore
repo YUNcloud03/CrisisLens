@@ -28,6 +28,7 @@ models/*.bin
 models/*_classes.json
 # 例外：5 類 v2 部署權重（15.6MB，雙主投票第二主，須隨 repo 發佈）
 !models/efficientnet_b0_5class_v2.pth
+!models/clip_linear_head.pth
 
 # ── 虛擬環境 ──────────────────────────────────────────
 venv/
