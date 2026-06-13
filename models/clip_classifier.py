@@ -16,6 +16,31 @@ import functools
 from utils.config import CLASSES_EN, CLASSES_ZH, PROMPT_SETS, MULTI_PROMPT_SETS, CLIP_MODEL_NAME
 
 _GENERATED_PATH = os.path.join(os.path.dirname(__file__), "..", "utils", "prompts_generated.json")
+_LINEAR_HEAD_PATH = os.path.join(os.path.dirname(__file__), "clip_linear_head.pth")
+
+
+def _slice_head_to_current_classes(weight, bias, saved_classes_en, target_classes_en):
+    """
+    依「類別名稱」從舊 linear head 的 weight/bias 挑出對應現在類別的列。
+
+    Parameters
+    ----------
+    weight            : Tensor (N_saved, in_dim)
+    bias              : Tensor (N_saved,)
+    saved_classes_en  : 舊權重的類別名稱清單（順序對應 weight 各列）
+    target_classes_en : 現在要保留的類別名稱清單（決定輸出順序）
+
+    Returns
+    -------
+    (sliced_weight, sliced_bias) 對齊 target_classes_en 順序；
+    若 target 任一類別不存在於 saved，回 None。
+    """
+    idx = []
+    for cls in target_classes_en:
+        if cls not in saved_classes_en:
+            return None
+        idx.append(saved_classes_en.index(cls))
+    return weight[idx], bias[idx]
 
 
 def _load_active_multi_prompts() -> tuple[dict, str]:
