@@ -624,6 +624,7 @@ if analyze_btn:
         "input_safety":      _input_check,
         "output_safety":     _output_check,
         "image_safety":      _image_check,
+        "inference_ms":      _inference_ms,
     }
     st.rerun()
 
@@ -735,7 +736,7 @@ if analysis and uploaded_file:
             "priority_rule_version": PRIORITY_RULE_VERSION,
             "report_id": None,
             "notes": f"submitted_by={user['username']}",
-            "inference_latency_ms": _inference_ms,
+            "inference_latency_ms": analysis.get("inference_ms"),
         })
 
         full_report = {
