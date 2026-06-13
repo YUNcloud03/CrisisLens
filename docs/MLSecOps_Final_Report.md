@@ -365,3 +365,93 @@ flowchart LR
 > **模型卡小結**：EfficientNet-B0（0.8375）為效能主力，CLIP 提供語意互補與 zero-shot 退路。最大殘餘風險是 linear-probe 的校準近似與颱風/土石流類弱點，均有監控與未來工作對應。
 
 ---
+
+## 4. Prompt Card
+
+> CrisisLens 有兩組 prompt：**CLIP 分類 prompt** 與 **RAG 應變建議 prompt**。本卡記錄其設計、版本與注入風險面。
+
+### 4.1 Prompt 識別與版本
+
+| Prompt | 用途 | 版本 | 來源 |
+|---|---|---|---|
+| CLIP 分類 prompt | zero-shot 多描述分類 | `multi-prompt-avg-5class-v2` | `utils/config.py` |
+| RAG 應變建議 prompt | 生成在地化應變建議 | `gemini-flash-rag-v1` | `rag/prompts.py` |
+| 生成模型 | — | Gemini 2.5 Flash | `rag/generator.py` |
+
+### 4.2 CLIP 分類 prompt
+
+- **PROMPT_SETS**：三組（A 簡短版 / B 完整句版 / C 社群情境版），各 5 條對應 5 類，供單 prompt 比較。
+- **MULTI_PROMPT_SETS**（主要）：每類 3–7 條多描述（Earthquake 7、Flood 4、Fire 4、Typhoon 4、Landslide 5）。zero-shot 路徑取各類多條 prompt 的**平均 cosine 相似度**再 ×100 softmax。
+- **範例（Earthquake 節錄）**：`"a photo of earthquake damage with collapsed buildings"`、`"a building that collapsed due to earthquake"`、`"a road cracked and broken by an earthquake"`。
+- **動態 prompt**：設計支援 Gemini 生成的 `utils/prompts_generated.json`（每類 ≥3 條才採用，否則回退內建）；**目前未生成 → 使用內建 MULTI_PROMPT_SETS**（`_load_active_multi_prompts()`）。
+- **設計理由**：多描述平均可降低單一 prompt 措辭的敏感度，使 zero-shot 輸出更穩定。
+
+### 4.3 RAG 應變建議 prompt
+
+- **`RAG_SYSTEM_PROMPT`**：角色＝台灣災害應變專家助理；要求輸出 3–5 條「・」開頭的可執行建議 + 來源說明。
+- **`RAG_USER_TEMPLATE`**：注入 `context`（FAISS 檢索的 SOP 片段）、`disaster_type`、`confidence`、`user_description`、`location`。
+- **檢索**：FAISS Flat L2 + `paraphrase-multilingual-MiniLM-L12-v2`，6 份 SOP（地震/淹水/火災/颱風/土石流/emergency），chunk 400 / overlap 80，zh-TW。
+- **Fallback**：LLM/RAG 不可用時改用 `FALLBACK_ADVICE`（按 5 類靜態建議）或 `GENERIC_FALLBACK_ADVICE`。
+
+### 4.4 Prompt 注入風險面與控制
+
+- **風險**：`user_description` 為使用者可控文字，會被串入 RAG prompt 的 context → **間接 prompt injection**（對應 OWASP LLM01）。
+- **控制**：
+  - ShieldGemma 輸入檢查（keyword → 本機 ShieldGemma → Gemini，P>0.7 block / >0.4 review）攔截已知注入 pattern。
+  - 結構化模板：`user_description` 以明確標籤欄位（「使用者描述：…」）插入，與 SOP context、disaster_type 分隔；**註：目前尚未做專用 XML/delimiter 隔離塊（規劃中，見 §6）**。
+  - 輸出檢查：`check_rag_output` 對建議做安全檢查，不安全則 sanitize 或退回靜態 fallback。
+  - 限速 10 筆/小時抑制自動化注入。
+  - 完整威脅分析見 §6。
+
+### 4.5 版本治理
+
+- `CLIP_PROMPT_VERSION` / `RAG_PROMPT_VERSION` 寫入 `model_runs`；CLIP 走 linear-probe 時改記 `CLIP_PROBE_VERSION`（§7）。Prompt 任何修改皆遞增版號以利稽核與 drift 追蹤。
+
+---
+
+## 5. 可信度測試（TEVV）
+
+> 依課程 TEVV 六面向（AI Security Deck, Slide 11）：**Performance / Fairness / Explainability / Robustness / Privacy / Security**。課程原則：Go/No-Go = 技術指標 + 可信度指標 + 殘餘風險核准。
+
+### 5.1 Performance（效能）
+
+- EfficientNet test macro-F1 **0.8375**（acc 0.847）；雙主投票提供互補（§3.4，圖 3-1）。
+
+### 5.2 Fairness（slice 公平性，非人口屬性）
+
+- CrisisLens 無人口 protected attribute → 以**類別 / 地區 / 時段** slice 取代 SPD/DI。
+- 逐類 recall 落差為主要不均：颱風 0.783 最弱、Landslide precision 0.694（§3.4）；三 split 類別占比一致（圖 2-2）。
+- 對策：颱風在地資料補強、重採樣、門檻調整（§9）。
+
+### 5.3 Explainability（可解釋性）
+
+- **方法論與實作規劃完整見 §3.5**（local/global 範圍、SHAP/LIME→Grad-CAM/影像LIME 對應、5 步做法、XAI 作為安全訊號）。
+- 現況：CLIP per-prompt 相似度 + Top-3 + 信心條 + 雙主一致性（coarse）；缺口：Grad-CAM / Integrated Gradients / 影像 SHAP（§9）。
+
+### 5.4 Robustness（穩健性）
+
+- **風險**：對抗樣本（FGSM/PGD，§6）、低光/遮蔽、影像壓縮、OOD（台灣場景偏移）、**文字疊圖 spurious correlation**（圖 2-5 的迷因/字卡）。
+- **現況**：資料增強（旋轉/翻轉/ColorJitter，圖 2-8）提供基本擾動韌性；雙主投票（ViT vs CNN）提高「同時被騙」難度。
+- **缺口**：未做正式 FGSM/PGD/AutoAttack、OOD、image-corruption 測試 → §9。
+
+### 5.5 Privacy（隱私）
+
+- `strip_exif` 移除 GPS/EXIF；H3 res 9（~174m）模糊化；不做人臉辨識；ShieldGemma 對身分證/手機/精確地址標 review；影像 admin-only + JPEG q85；限速。詳見 §2.5、§6。
+- **缺口**：無自動資料保留/刪除政策（§9）；GDPR Art.4(1) 視位置為個資（§6）。
+
+### 5.6 Security（安全）
+
+- 完整威脅模型見 **§6**（七層防禦、對抗 / RAG poisoning / prompt injection / EXIF 洩漏、`weights_only`、MITRE ATLAS / OWASP LLM Top 10 對應）。
+
+### 5.7 TEVV 總結
+
+| 面向 | 現況 | 證據 | 缺口 |
+|---|---|---|---|
+| Performance | macro-F1 0.8375 | §3.4、圖 3-1 | 颱風/土石流類弱點 |
+| Fairness（slice） | 逐類/split 分析 | §3.4、圖 2-2/2-4 | 無正式 slice-by-region 監控 |
+| Explainability | coarse（相似度/Top-3/一致性） | §3.5 | Grad-CAM/SHAP 未實作 |
+| Robustness | 增強 + 雙主投票 | 圖 2-8、§3.6 | 無正式對抗/OOD 測試 |
+| Privacy | strip_exif + H3 + ShieldGemma | §2.5 | 無保留/刪除政策 |
+| Security | 七層防禦 + 護欄 | §6 | 無正式紅隊測試 |
+
+---
