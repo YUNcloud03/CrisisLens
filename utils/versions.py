@@ -7,6 +7,7 @@ MLOps 版本常數。
 # ── 模型版本 ──────────────────────────────────────────────────
 CLIP_MODEL_VERSION       = "clip-vitl14-v1"
 CLIP_PROMPT_VERSION      = "multi-prompt-avg-5class-v2"  # classify_multi_prompt 多描述平均（5 類）
+CLIP_PROBE_VERSION       = "linear-probe-medic-6to5-v1"  # 舊 6 類 linear probe 切片成 5 類
 
 EFFNET_MODEL_VERSION     = "efficientnet-b0-medic-5class-v2"  # 雙主投票第二主（test macro-F1 0.8375）
 
