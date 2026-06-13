@@ -584,3 +584,71 @@ _need_review = int(
 - `tools/seed_mlops_demo.py` 可生成示範資料（14 天、含人工修正）供儀表板展示。
 
 ---
+
+## 8. 合規對應（Compliance Mapping）
+
+> 依課程精神「把標準當控制地圖，每個控制對應一份證據」（AI Security Deck, Slides 14/45）。下表將 CrisisLens 的控制對應到 NIST AI RMF、ISO/IEC 42001+27001、ETSI EN 304 223、OWASP LLM Top 10、MITRE ATLAS，並指向本報告的證據章節。
+
+### 8.1 標準總覽
+
+- **NIST AI RMF 1.0**：Govern / Map / Measure / Manage 四功能。
+- **ISO/IEC 42001**（AI 管理系統）+ **27001**（資訊安全管理）。
+- **ETSI EN 304 223**：AI 的安全設計 / 開發 / 部署 / 維運 / 退役基線。
+- **OWASP LLM Top 10 (2025)**：LLM 應用風險清單。
+- **MITRE ATLAS**：對抗式 ML 戰術 / 技術詞彙。
+- **EU AI Act**：風險分級義務、人類監督（本系統屬中高風險、保留人類裁量）。
+
+### 8.2 控制 → 標準對照表
+
+| CrisisLens 控制 | NIST AI RMF | ISO 42001 / 27001 | ETSI EN 304 223 | OWASP LLM | MITRE ATLAS | 證據 |
+|---|---|---|---|---|---|---|
+| 資料來源驗證、固定學術資料集 | Map | 42001 | 安全設計 | — | — | §2.2/2.8 |
+| 去重 / 洩漏排除 / slice 分析 | Measure | 42001 | — | — | — | §2.6/2.7 |
+| strip_exif + H3 模糊化 | Measure（privacy） | 27001 | 安全設計 | LLM02 | Exfiltration | §2.5/§6.2.4 |
+| 雙主投票 + need_review | Measure / Manage | 42001 | 安全部署 | — | Evade ML Model | §3.4/§7.3 |
+| ShieldGemma 三檢查點 | Manage | 27001 | 安全部署 | LLM01/05 | Prompt Injection | §6.3 |
+| RAG 靜態 KB + 版本紀錄 + 免責 | Manage | 42001 | 安全維運 | LLM04/08/09 | Poison | §6.2.2 |
+| weights_only 載入 | Manage | 27001 | 安全維運 | LLM03 | Supply Chain | §6.2.5 |
+| PBKDF2 認證 + admin 權限 | Govern | 27001 | 安全設計 | — | — | §6.4 |
+| 限速 10/hr | Manage | 27001 | 安全部署 | LLM10 | — | §6.4 |
+| 版本化 + MLOps 監控 + retraining 觸發 | Manage | 42001（持續改善） | 安全維運 | — | — | §7 |
+| 人類監督（admin 審核、免責、非自動派遣） | Govern | 42001 | 安全治理 | — | — | §1.1/§7 |
+| 版本回退 / legacy 淘汰 | Manage | 42001 | 退役 | — | — | §3.1/§7.6 |
+
+> **未實作但規劃中**（標準要求、目前缺口）：正式紅隊測試（OWASP 測試表）、AI-BOM/簽章（ETSI 維運）、資料保留/刪除政策（27001/GDPR）、SHAP/Grad-CAM 解釋證據。詳見 §9。
+
+---
+
+## 9. 殘餘風險與反思
+
+### 9.1 已知限制與殘餘風險
+
+| 風險 | 說明 | 對應 |
+|---|---|---|
+| linear-probe 校準近似 | temperature 0.38 為舊 6 類校準，套至 5 類非精確，放大信心 | §3.7 |
+| 投票互補性下降 | linear-probe 取代 zero-shot → CLIP 與 EfficientNet 皆監督式，need_review 主靠不一致 | §3.7 |
+| 無新 5 類驗證 | linear-probe 沿用舊 head 切片，未以新 5 類資料重新驗證 | §3.7 |
+| 類別弱點 | 颱風 recall 0.783、Landslide precision 0.694 | §3.4 |
+| 領域偏移 | 訓練以西半球/大西洋颶風為主，台灣場景準確率可能下降 | §2.6 |
+| 供應鏈缺口 | `resnet_baseline.py` 未加 `weights_only` | §6.2.5 |
+| XAI 缺口 | 無 Grad-CAM/SHAP，無法系統性檢查文字疊圖依賴 | §3.5 |
+| 安全測試缺口 | 無正式 FGSM/PGD/AutoAttack、OOD、紅隊測試 | §5.4/§6 |
+| 隱私缺口 | 無自動資料保留/刪除政策 | §2.5 |
+| Prompt 隔離 | user_description 僅以標籤欄位分隔，無專用 XML/delimiter 隔離 | §4.4/§6.2.3 |
+| 動態 prompt | `prompts_generated.json` 設計支援但未生成 | §4.2 |
+
+### 9.2 未來工作
+
+1. 以新 5 類資料重訓 linear-probe head，並重新校準 `need_review` 閾值。
+2. 導入 Grad-CAM / Integrated Gradients / 影像 SHAP，並建立「文字疊圖依賴」的 XAI 安全訊號檢查（§3.5）。
+3. 正式 robustness / 紅隊測試：FGSM/PGD/AutoAttack、OOD、image corruption、OWASP LLM Top 10 測試表。
+4. 供應鏈：補齊 `resnet_baseline.py` 的 `weights_only`；建立 AI-BOM 與權重雜湊/簽章。
+5. 隱私：制定資料保留/刪除政策。
+6. Prompt 隔離：實作專用 XML/delimiter 隔離塊。
+7. Fairness：建立 region/time slice 的持續監控。
+
+### 9.3 學習反思
+
+CrisisLens 的開發體現了 MLSecOps 的核心轉變——**從「只看準確率」到「風險導向交付」**：模型的效能（macro-F1 0.8375）只是 Go/No-Go 的一部分，資料治理（Data Card）、模型治理（Model Card）、可信度（TEVV）、威脅模型與合規對應同樣是上線的必要證據。把課程框架（Data/Model/Prompt Card、七層防禦、TEVV、標準對應）套到一個真實的多模型 + RAG + 安全護欄系統，最大的收穫是：**每一項控制都必須能指向一份可稽核的證據，而每一個「未實作」都必須誠實列為殘餘風險**——這正是本報告刻意區分「現況 vs 規劃」的原因。
+
+---
