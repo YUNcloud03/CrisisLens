@@ -364,7 +364,7 @@ with left_col:
     road_blocked = st.checkbox("道路不可通行")
     power_outage = st.checkbox("停電")
     st.markdown("<br>", unsafe_allow_html=True)
-    analyze_btn = st.button("AI 辨識並產生建議", width="stretch")
+    analyze_btn = st.button("AI 辨識並產生建議", use_container_width=True)
 
 with right_col:
     if latitude != 0.0 and longitude != 0.0:
@@ -630,7 +630,7 @@ if analysis and uploaded_file:
         )
         st.stop()
 
-    if st.button("送出災情回報", width="stretch"):
+    if st.button("送出災情回報", use_container_width=True):
         uploaded_file.seek(0)
         img = load_image(uploaded_file)
         fname = f"{uuid.uuid4().hex}.jpg"
