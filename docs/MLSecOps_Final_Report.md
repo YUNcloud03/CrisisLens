@@ -213,3 +213,99 @@ flowchart LR
 > **資料卡小結**：訓練資料偏誤（地理/類別不平衡/Hurricane≠Typhoon）是主要品質風險，已以選模指標與增強部分緩解；生產資料的主要風險是隱私（GPS/PII）與不受信任輸入，已以 `strip_exif` + H3 模糊化 + ShieldGemma + 限速控制。
 
 ---
+
+## 3. Model Card
+
+> 採課程 Model Card 9 段模板。CrisisLens 的分類核心是**雙主投票**：CLIP（第一主）+ EfficientNet-B0（第二主）。CLIP 本身有兩條路徑（linear-probe 優先、zero-shot 退路）。
+
+### 3.1 Model identity（模型識別）
+
+| 模型 | 演算法 | 版本 | 權重 / 入口 |
+|---|---|---|---|
+| CLIP（第一主） | ViT-L/14，linear-probe 優先 / zero-shot 退路 | `clip-vitl14-v1` · `linear-probe-medic-6to5-v1` · `multi-prompt-avg-5class-v2` | `models/clip_linear_head.pth`；`classify_clip()` |
+| EfficientNet-B0（第二主） | CNN，MEDIC 5 類微調 | `efficientnet-b0-medic-5class-v2` | `models/efficientnet_b0_5class_v2.pth` |
+| DisasterCNN_v1（legacy） | 自訓 4-block CNN（~400K params） | `custom-cnn-medic-5class-v2` | 已從投票淘汰 |
+| ResNet50（legacy） | baseline linear probe | — | 已淘汰 |
+
+### 3.2 Intended use（預期用途）
+
+- **核准使用者**：民眾回報端、admin 審核端。
+- **決策情境**：將災情影像分類為 5 類，作為應變建議與事件聚合的**輔助情報**。
+- **禁止用途**：不得作為自動派遣/資源調度的唯一依據；不得取代官方災害判定；不得商業化（MEDIC 授權限制）。
+
+### 3.3 Training data（訓練資料）
+
+- QCRI/MEDIC 5 類 v2（詳見 §2）：train 23,075 / val 2,672 / test 5,649；已去重（−3,616）與測試集洩漏排除（−60）。
+- 目標：5 類災害的單標籤分類。EfficientNet 前處理 Resize(288)→CenterCrop(256) + ImageNet normalize。
+
+### 3.4 Performance（效能）
+
+**EfficientNet-B0（test，`docs/phase_b_state.md`）：test macro-F1 = 0.8375**
+
+| 類別 | Recall | 備註 |
+|---|---|---|
+| 地震 Earthquake | 0.862 | |
+| 淹水 Flood | 0.877 | |
+| 火災 Fire | 0.894 | 最佳 |
+| 颱風 Typhoon | **0.783** | 最弱（Hurricane≠Typhoon 分布偏移） |
+| 土石流 Landslide | 0.843 | **precision 0.694 偏低**（易誤判入此類） |
+
+- **雙主投票機制**：兩模型一致 → 高信心；不一致 → `model_agreement=0` 且 `need_review=1`，primary 取信心較高者。
+- Legacy 對照：DisasterCNN_v1 test macro-F1 **0.7012**（< EfficientNet 0.8375，故淘汰）。
+
+```mermaid
+flowchart LR
+  IMG["影像"] --> C["CLIP ViT-L/14<br/>linear-probe（退路 zero-shot）"]
+  IMG --> E["EfficientNet-B0<br/>（MEDIC 微調）"]
+  C --> AGG{"一致?"}
+  E --> AGG
+  AGG -- "是" --> HI["高信心輸出"]
+  AGG -- "否" --> RV["model_agreement=0<br/>need_review=1<br/>取信心較高者"]
+```
+
+### 3.5 Fairness & XAI（公平性與可解釋性）
+
+- **公平性（slice）**：無人口受保護屬性，改以**逐類別 recall** 作為 slice 公平性指標。目前 slice 不均：颱風 recall 0.783 最弱、Landslide precision 0.694 偏低 → 對策為增樣/重採樣與颱風在地資料補強（§9）。
+- **可解釋性**：
+  - CLIP zero-shot 路徑天然可解釋（影像↔文字 prompt 的相似度），輸出 Top-3 類別 + 信心條。
+  - 雙主投票一致性本身即一種「決策信賴度」訊號。
+  - **缺口**：尚未導入 SHAP / Grad-CAM 等視覺歸因（課程在 tabular 用 SHAP/LIME，視覺對應為 Grad-CAM）→ 列為未來工作（§9）。
+
+### 3.6 Security testing（安全測試）
+
+- **固有對抗韌性**：CLIP（ViT）與 EfficientNet（CNN）架構與訓練目標獨立，單一對抗擾動難同時騙過兩者；不一致即觸發 `need_review`。
+- **供應鏈**：權重載入採 `torch.load(weights_only=True)`（CLIP/EfficientNet/CustomCNN）防止反序列化任意程式碼；**已知缺口**：`models/resnet_baseline.py` 未加 `weights_only`（§6、§9）。
+- **缺口**：尚未做正式 FGSM/PGD 對抗測試與 data poisoning 測試 → 未來工作。完整威脅模型見 §6。
+
+### 3.7 Limitations & residual risk（限制與殘餘風險）
+
+| 限制 | 說明 |
+|---|---|
+| Temperature 校準不符 | linear-probe temperature **0.3814** 為舊 6 類校準，切至 5 類為近似，會放大信心 |
+| 投票互補性下降 | linear-probe 取代 zero-shot 後，CLIP 與 EfficientNet 皆為監督式 → 錯誤相關性升高，`need_review` 對信心/gap 的攔截變弱（主要靠模型不一致） |
+| 無新 5 類驗證 | linear-probe 沿用舊 head 切片，未以新 5 類資料重新驗證 |
+| 類別弱點 | 颱風 recall 0.783、Landslide precision 0.694 |
+| 領域偏移 | 訓練以西半球事件為主，台灣場景準確率可能下降 |
+
+### 3.8 Deployment & monitoring（部署與監控）
+
+- **need_review 觸發**：`confidence < 0.50` 或 `Top1−Top2 gap < 0.15` 或 `model_agreement == 0`（`utils/versions.py`、`app.py`）。
+- **Retraining 觸發**：`need_review` 率 > 30%（連續 100 筆）或 model agreement < 60%（持續 7 天）。
+- **監控**：`model_runs` 表記錄各模型版本 + `inference_latency_ms`；MLOps 儀表板追蹤延遲、信心 drift、人工修正率（§7）。
+- **Rollback**：權重版本化；linear-probe 載入失敗自動退回 zero-shot，模型選單亦可手動切回。
+
+### 3.9 Approval gate（上線審核閘）
+
+對應課程 deploy / improve / block：
+
+| 判準 | CrisisLens 現況 |
+|---|---|
+| 效能門檻 | EfficientNet macro-F1 0.8375 ≫ legacy CNN 0.7012 → **deploy** |
+| 模型一致性 | 雙主投票 + `need_review` 攔截可疑樣本 |
+| 安全控制 | ShieldGemma 三檢查點 + weights_only + 限速（§6） |
+| 監控擁有者 | admin 負責審核與監控 |
+| 殘餘風險 | linear-probe 校準近似 → 以「保留 zero-shot 退路 + 可 A/B」作為 **improve** 配套，未硬性 block |
+
+> **模型卡小結**：EfficientNet-B0（0.8375）為效能主力，CLIP 提供語意互補與 zero-shot 退路。最大殘餘風險是 linear-probe 的校準近似與颱風/土石流類弱點，均有監控與未來工作對應。
+
+---
