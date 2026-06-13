@@ -49,6 +49,7 @@ from utils.versions import (
     CLIP_TOP2_GAP_THRESHOLD,
     CLIP_MODEL_VERSION,
     CLIP_PROMPT_VERSION,
+    CLIP_PROBE_VERSION,
     EFFNET_MODEL_VERSION,
     PRIORITY_RULE_VERSION,
     RAG_INDEX_VERSION,
@@ -584,6 +585,9 @@ if analyze_btn:
     _top3_for_gap = (clip_result or effnet_result).get("top_3", [])
     _clip_gap     = (_top3_for_gap[0]["score"] - _top3_for_gap[1]["score"]
                      if len(_top3_for_gap) >= 2 else 1.0)
+    # 注意：信心/gap 閾值是針對 zero-shot CLIP 校準的。linear-probe 的溫度(~0.38)
+    # 會把信心顯著放大，使前兩項判準較少觸發；走 probe 時 need_review 主要靠模型不一致(第三項)。
+    # 若要 probe 路徑也能靠信心送審，需重新校準 CLIP_LOW_CONF_THRESHOLD / CLIP_TOP2_GAP_THRESHOLD。
     _need_review  = int(
         primary["confidence"] < CLIP_LOW_CONF_THRESHOLD
         or _clip_gap          < CLIP_TOP2_GAP_THRESHOLD
@@ -712,13 +716,17 @@ if analysis and uploaded_file:
 
         # model_run 版本記錄（第二主 = EfficientNet-B0；欄位名沿用 resnet_*）
         _aux_ver = EFFNET_MODEL_VERSION if effnet_result else None
+        # CLIP 版本：實際走 linear-probe 時記 probe 版，否則記 zero-shot 版
+        _clip_prompt_ver = (CLIP_PROBE_VERSION
+                            if clip_result and clip_result.get("method") == "linear_probe"
+                            else CLIP_PROMPT_VERSION)
 
         now = datetime.now().isoformat(timespec="seconds")
         run_id = insert_model_run({
             "run_time": now,
             "trigger": "submit",
             "clip_model_version": CLIP_MODEL_VERSION,
-            "clip_prompt_version": CLIP_PROMPT_VERSION,
+            "clip_prompt_version": _clip_prompt_ver,
             "resnet_model_version": _aux_ver,
             "rag_index_version": RAG_INDEX_VERSION,
             "rag_prompt_version": RAG_PROMPT_VERSION,
@@ -746,7 +754,7 @@ if analysis and uploaded_file:
             "event_time": now,
             "upload_time": now,
             "clip_model_version": CLIP_MODEL_VERSION,
-            "clip_prompt_version": CLIP_PROMPT_VERSION,
+            "clip_prompt_version": _clip_prompt_ver,
             "clip_disaster_type": primary["top_class"],
             "clip_confidence": primary["confidence"],
             "clip_top3": json.dumps(top3, ensure_ascii=False),
