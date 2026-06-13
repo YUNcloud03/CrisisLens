@@ -73,3 +73,37 @@ def test_load_linear_head_outputs_five_classes():
     # 隨機 768 維特徵應產生 5 個 logit
     out = head(torch.randn(1, 768))
     assert out.shape == (1, 5)
+
+
+import models.clip_classifier as cc
+
+
+def test_classify_clip_falls_back_to_zero_shot(monkeypatch):
+    # 模擬 linear probe 不可用
+    monkeypatch.setattr(cc, "_load_linear_head", lambda: None)
+    monkeypatch.setattr(cc, "classify_multi_prompt",
+                        lambda img: {"top_class": "Flood", "top_class_zh": "淹水",
+                                     "confidence": 0.9, "top_3": [], "all_scores": {}})
+    out = cc.classify_clip(object(), prefer_probe=True)
+    assert out["method"] == "zero_shot"
+    assert out["top_class"] == "Flood"
+
+
+def test_classify_clip_uses_probe_when_available(monkeypatch):
+    monkeypatch.setattr(cc, "_load_linear_head", lambda: ("dummy_head", 1.0))
+    monkeypatch.setattr(cc, "classify_linear_probe",
+                        lambda img: {"top_class": "Fire", "top_class_zh": "火災",
+                                     "confidence": 0.8, "top_3": [], "all_scores": {},
+                                     "method": "linear_probe"})
+    out = cc.classify_clip(object(), prefer_probe=True)
+    assert out["method"] == "linear_probe"
+    assert out["top_class"] == "Fire"
+
+
+def test_classify_clip_prefer_probe_false_uses_zero_shot(monkeypatch):
+    monkeypatch.setattr(cc, "_load_linear_head", lambda: ("dummy_head", 1.0))
+    monkeypatch.setattr(cc, "classify_multi_prompt",
+                        lambda img: {"top_class": "Landslide", "top_class_zh": "土石流或坍方",
+                                     "confidence": 0.7, "top_3": [], "all_scores": {}})
+    out = cc.classify_clip(object(), prefer_probe=False)
+    assert out["method"] == "zero_shot"

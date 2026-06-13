@@ -231,6 +231,57 @@ def classify_multi_prompt(image: Image.Image) -> dict:
     }
 
 
+def classify_linear_probe(image: Image.Image) -> dict:
+    """
+    用切片後的 5 類 linear probe 分類（凍結 CLIP 特徵 + 線性層）。
+    回傳格式與 classify_multi_prompt 相同，額外帶 method="linear_probe"。
+    """
+    loaded = _load_linear_head()
+    if loaded is None:
+        raise FileNotFoundError("無法載入 models/clip_linear_head.pth（缺失或類別對不上）。")
+    head, temperature = loaded
+
+    model, preprocess, device = _load_clip()
+    image_input = preprocess(image).unsqueeze(0).to(device)
+
+    with torch.no_grad():
+        feat = model.encode_image(image_input)
+        feat = feat / feat.norm(dim=-1, keepdim=True)        # 與訓練端一致的 L2 normalize
+        logits = head(feat.float().cpu())
+        scores = (logits / temperature).softmax(dim=-1)[0].numpy()   # (5,) 溫度校準
+
+    top_indices = scores.argsort()[::-1][:3]
+    top_3 = [
+        {"class": CLASSES_EN[i], "class_zh": CLASSES_ZH[i], "score": float(scores[i])}
+        for i in top_indices
+    ]
+    best = top_3[0]
+    return {
+        "top_class":     best["class"],
+        "top_class_zh":  best["class_zh"],
+        "confidence":    best["score"],
+        "top_3":         top_3,
+        "all_scores":    {CLASSES_ZH[i]: float(scores[i]) for i in range(len(scores))},
+        "method":        "linear_probe",
+        "prompt_source": "Linear Probe (MEDIC 6→5)",
+    }
+
+
+def classify_clip(image: Image.Image, prefer_probe: bool = True) -> dict:
+    """
+    CLIP 統一入口。prefer_probe 時優先用 linear probe，載入失敗或推論出錯則退回
+    zero-shot（classify_multi_prompt）。結果以 method 欄位標示實際使用的路徑。
+    """
+    if prefer_probe and _load_linear_head() is not None:
+        try:
+            return classify_linear_probe(image)
+        except Exception:
+            pass  # 退回 zero-shot
+    result = classify_multi_prompt(image)
+    result["method"] = "zero_shot"
+    return result
+
+
 def compare_prompt_sets(image: Image.Image) -> dict:
     """一次跑三組 prompt set，回傳各組結果供比較。"""
     return {key: classify(image, key) for key in PROMPT_SETS}
