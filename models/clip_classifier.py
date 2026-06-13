@@ -16,6 +16,73 @@ import functools
 from utils.config import CLASSES_EN, CLASSES_ZH, PROMPT_SETS, MULTI_PROMPT_SETS, CLIP_MODEL_NAME
 
 _GENERATED_PATH = os.path.join(os.path.dirname(__file__), "..", "utils", "prompts_generated.json")
+_LINEAR_HEAD_PATH = os.path.join(os.path.dirname(__file__), "clip_linear_head.pth")
+
+
+def _slice_head_to_current_classes(weight, bias, saved_classes_en, target_classes_en):
+    """
+    依「類別名稱」從舊 linear head 的 weight/bias 挑出對應現在類別的列。
+
+    Parameters
+    ----------
+    weight            : Tensor (N_saved, in_dim)
+    bias              : Tensor (N_saved,)
+    saved_classes_en  : 舊權重的類別名稱清單（順序對應 weight 各列）
+    target_classes_en : 現在要保留的類別名稱清單（決定輸出順序）
+
+    Returns
+    -------
+    (sliced_weight, sliced_bias) 對齊 target_classes_en 順序；
+    若 target 任一類別不存在於 saved，回 None。
+    """
+    saved_index = {cls: i for i, cls in enumerate(saved_classes_en)}
+    idx = []
+    for cls in target_classes_en:
+        if cls not in saved_index:
+            return None
+        idx.append(saved_index[cls])
+    return weight[idx], bias[idx]
+
+
+@functools.lru_cache(maxsize=1)
+def _load_linear_head():
+    """
+    載入 clip_linear_head.pth，並把舊類別切片成現在的 CLASSES_EN。
+    回傳 (head: nn.Linear, temperature: float) 或 None（檔案缺失 / 維度不符 / 類別對不上）。
+
+    註：本函式以 lru_cache 快取結果，包含 None。一旦回傳 None（例如啟動時權重
+    尚未就位），同一行程內不會重試，需重啟才會重新嘗試載入。
+    """
+    if not os.path.exists(_LINEAR_HEAD_PATH):
+        return None
+    import torch.nn as nn
+    try:
+        ckpt = torch.load(_LINEAR_HEAD_PATH, map_location="cpu", weights_only=True)
+        sd = ckpt["state_dict"]
+        weight, bias = sd["weight"], sd["bias"]            # (N_saved, in_dim), (N_saved,)
+        if weight.shape[1] != ckpt.get("in_dim", weight.shape[1]):
+            return None
+        sliced = _slice_head_to_current_classes(weight, bias, ckpt["classes_en"], CLASSES_EN)
+        if sliced is None:
+            return None
+        sliced_w, sliced_b = sliced
+        head = nn.Linear(sliced_w.shape[1], sliced_w.shape[0])
+        with torch.no_grad():
+            head.weight.copy_(sliced_w)
+            head.bias.copy_(sliced_b)
+        head.eval()
+        temperature = float(ckpt.get("temperature", 1.0))
+        return head, temperature
+    except Exception as e:
+        logging.getLogger(__name__).warning(
+            "linear probe 載入失敗，將退回 zero-shot：%s", e
+        )
+        return None
+
+
+def linear_probe_available() -> bool:
+    """UI 用：linear probe 權重是否可成功載入並切片。"""
+    return _load_linear_head() is not None
 
 
 def _load_active_multi_prompts() -> tuple[dict, str]:
@@ -162,6 +229,59 @@ def classify_multi_prompt(image: Image.Image) -> dict:
         "all_scores":   {CLASSES_ZH[i]: float(probs[i]) for i in range(len(probs))},
         "prompt_source": prompt_source,
     }
+
+
+def classify_linear_probe(image: Image.Image) -> dict:
+    """
+    用切片後的 5 類 linear probe 分類（凍結 CLIP 特徵 + 線性層）。
+    回傳格式與 classify_multi_prompt 相同，額外帶 method="linear_probe"。
+    """
+    loaded = _load_linear_head()
+    if loaded is None:
+        raise FileNotFoundError("無法載入 models/clip_linear_head.pth（缺失或類別對不上）。")
+    head, temperature = loaded
+
+    model, preprocess, device = _load_clip()
+    image_input = preprocess(image).unsqueeze(0).to(device)
+
+    with torch.no_grad():
+        feat = model.encode_image(image_input)
+        feat = feat / feat.norm(dim=-1, keepdim=True)        # 與訓練端一致的 L2 normalize
+        logits = head(feat.float().cpu())
+        scores = (logits / temperature).softmax(dim=-1)[0].numpy()   # (5,) 溫度校準
+
+    top_indices = scores.argsort()[::-1][:3]
+    top_3 = [
+        {"class": CLASSES_EN[i], "class_zh": CLASSES_ZH[i], "score": float(scores[i])}
+        for i in top_indices
+    ]
+    best = top_3[0]
+    return {
+        "top_class":     best["class"],
+        "top_class_zh":  best["class_zh"],
+        "confidence":    best["score"],
+        "top_3":         top_3,
+        "all_scores":    {CLASSES_ZH[i]: float(scores[i]) for i in range(len(scores))},
+        "method":        "linear_probe",
+        "prompt_source": "Linear Probe (MEDIC 6→5)",
+    }
+
+
+def classify_clip(image: Image.Image, prefer_probe: bool = True) -> dict:
+    """
+    CLIP 統一入口。prefer_probe 時優先用 linear probe，載入失敗或推論出錯則退回
+    zero-shot（classify_multi_prompt）。結果以 method 欄位標示實際使用的路徑。
+    """
+    if prefer_probe and _load_linear_head() is not None:
+        try:
+            return classify_linear_probe(image)
+        except Exception as e:
+            logging.getLogger(__name__).warning(
+                "classify_linear_probe 推論失敗，退回 zero-shot：%s", e
+            )
+    result = classify_multi_prompt(image)
+    result["method"] = "zero_shot"
+    return result
 
 
 def compare_prompt_sets(image: Image.Image) -> dict:

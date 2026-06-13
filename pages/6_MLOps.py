@@ -3,9 +3,13 @@ import os, sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import streamlit as st
-from datetime import datetime
 from db.database import init_db
-from db.queries import get_model_runs, get_admin_corrections, get_need_review_reports
+import pandas as pd
+from db.queries import (
+    get_model_runs, get_admin_corrections, get_need_review_reports,
+    get_correction_accuracy_stats, get_confidence_distribution,
+    get_daily_confidence_stats,
+)
 from utils.auth import require_admin
 from utils.ui_theme import apply_theme, page_header, stat_card, top_pill
 
@@ -51,7 +55,7 @@ with k4:
 st.markdown("<hr>", unsafe_allow_html=True)
 
 # ─── Tab 佈局 ─────────────────────────────────────────────────
-tab1, tab2, tab3 = st.tabs(["📋 Model Runs（版本記錄）", "✏️ Admin Corrections（人工修正）", "🔍 待審核回報"])
+tab1, tab2, tab3, tab4 = st.tabs(["📋 Model Runs（版本記錄）", "✏️ Admin Corrections（人工修正）", "🔍 待審核回報", "📊 效能分析"])
 
 # ══════════════════════════════════════════════════════════════
 # Tab 1 — Model Runs
@@ -76,7 +80,7 @@ with tab1:
             for v in clip_versions:
                 st.code(v, language=None)
         with vc2:
-            st.markdown("**ResNet/CNN 版本**")
+            st.markdown("**第二主模型版本（EfficientNet / 舊 ResNet・CNN）**")
             for v in resnet_versions:
                 st.code(v, language=None)
         with vc3:
@@ -101,7 +105,7 @@ with tab1:
                 f'<span style="color:#475569;min-width:120px">{t}</span>'
                 f'<span style="color:#94a3b8">Run <strong>#{run["run_id"]}</strong> → Report #{rid}</span>'
                 f'<span style="color:#38bdf8">CLIP: {cv}</span>'
-                f'<span style="color:#a78bfa">ResNet: {rv}</span>'
+                f'<span style="color:#a78bfa">2nd: {rv}</span>'
                 f'<span style="color:#4ade80">Agg: {av}</span>'
                 f'<span style="color:#fb923c">Priority: {pv}</span>'
                 f'</div>',
@@ -203,3 +207,161 @@ with tab3:
                 f"⚠️ **待審核率 {review_rate} > 30%**（{need_review_cnt}/{total_runs} 筆）  \n"
                 "建議收集更多修正標籤後執行 Retraining。"
             )
+
+# ══════════════════════════════════════════════════════════════
+# Tab 4 — 效能分析
+# ══════════════════════════════════════════════════════════════
+with tab4:
+    st.markdown("""
+    以管理員修正記錄為 ground truth，計算線上模型預測準確率與每類別錯誤率。
+    樣本數越多，指標越具代表性。
+    """)
+
+    acc_stats  = get_correction_accuracy_stats()
+    conf_stats = get_confidence_distribution(limit=200)
+
+    # ── 區塊 A：整體準確率 ────────────────────────────────────
+    st.markdown("#### A｜整體預測準確率（基於管理員修正）")
+    if len(acc_stats) < 5:
+        st.info(f"修正資料尚不足以計算準確率，目前僅 {len(acc_stats)} 筆（需至少 5 筆）。")
+    else:
+        df_acc = pd.DataFrame(acc_stats)
+        df_acc["correct"] = df_acc["predicted"] == df_acc["ground_truth"]
+        overall_acc = df_acc["correct"].mean()
+        n = len(df_acc)
+
+        pa1, pa2 = st.columns(2)
+        with pa1:
+            st.metric("整體準確率", f"{overall_acc:.1%}", help=f"基於 {n} 筆管理員修正")
+        with pa2:
+            st.metric("錯誤修正筆數", int((~df_acc["correct"]).sum()), help="模型預測與管理員核實不符的次數")
+
+        st.caption(f"資料來源：{n} 筆 disaster_type 管理員修正記錄")
+
+        # ── 區塊 B：Per-class 錯誤率 ─────────────────────────
+        st.markdown("#### B｜各類別錯誤率")
+        class_stats = (
+            df_acc.groupby("ground_truth")
+            .agg(
+                總修正筆數=("correct", "count"),
+                預測錯誤數=("correct", lambda x: (~x).sum()),
+            )
+            .assign(錯誤率=lambda d: (d["預測錯誤數"] / d["總修正筆數"] * 100).round(1))
+            .sort_values("錯誤率", ascending=False)
+            .reset_index()
+            .rename(columns={"ground_truth": "類別（Ground Truth）"})
+        )
+        st.dataframe(
+            class_stats.style.background_gradient(subset=["錯誤率"], cmap="Reds"),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+        # ── 區塊 C：混淆矩陣 ─────────────────────────────────
+        st.markdown("#### C｜混淆矩陣（列 = Ground Truth，欄 = 模型預測）")
+        all_classes = sorted(set(df_acc["predicted"]) | set(df_acc["ground_truth"]))
+        cm = pd.crosstab(
+            df_acc["ground_truth"],
+            df_acc["predicted"],
+            rownames=["ground_truth"],
+            colnames=["predicted"],
+        ).reindex(index=all_classes, columns=all_classes, fill_value=0)
+        st.dataframe(
+            cm.style.background_gradient(cmap="Blues"),
+            use_container_width=True,
+        )
+
+    # ── 區塊 D：信心分佈趨勢 ──────────────────────────────────
+    st.markdown("#### D｜近期推論信心分佈（最近 200 筆）")
+    if not conf_stats:
+        st.info("尚無推論記錄。")
+    else:
+        df_conf = pd.DataFrame(conf_stats)
+        df_conf = df_conf.iloc[::-1].reset_index(drop=True)  # 時間升冪
+
+        pd1, pd2, pd3 = st.columns(3)
+        with pd1:
+            st.metric("平均信心度", f"{df_conf['clip_confidence'].mean():.1%}")
+        with pd2:
+            agree_rate = df_conf["model_agreement"].mean() if "model_agreement" in df_conf else 0
+            st.metric("雙模型一致率", f"{agree_rate:.1%}")
+        with pd3:
+            review_r = df_conf["need_review"].mean() if "need_review" in df_conf else 0
+            st.metric("待審核率", f"{review_r:.1%}")
+
+        st.line_chart(
+            df_conf[["clip_confidence"]].rename(columns={"clip_confidence": "CLIP 信心度"}),
+            use_container_width=True,
+            height=200,
+        )
+
+    # ── 區塊 E：7 天信心 Drift 偵測 ──────────────────────────
+    st.markdown("#### E｜7 天信心 Drift 偵測")
+    daily_stats = get_daily_confidence_stats(days=14)
+    if len(daily_stats) < 2:
+        st.info("每日信心趨勢需至少 2 天資料，目前不足。")
+    else:
+        df_daily = pd.DataFrame(daily_stats)
+        st.line_chart(
+            df_daily.set_index("day")[["avg_conf", "review_rate"]].rename(
+                columns={"avg_conf": "每日平均信心", "review_rate": "待審核率"}
+            ),
+            use_container_width=True,
+            height=220,
+        )
+        if len(df_daily) >= 14:
+            prev7 = df_daily.iloc[:7]["avg_conf"].mean()
+            last7 = df_daily.iloc[7:]["avg_conf"].mean()
+            drift  = (prev7 - last7) / prev7 if prev7 > 0 else 0
+            if drift > 0.10:
+                st.warning(
+                    f"⚠️ **Model Drift 警告**：近 7 天平均信心 {last7:.1%}，"
+                    f"較前 7 天 {prev7:.1%} 下滑 {drift:.1%}（閾值 10%）。"
+                )
+            else:
+                st.success(f"✅ 信心分佈穩定（近 7 天 {last7:.1%} vs 前 7 天 {prev7:.1%}）。")
+
+    # ── 區塊 F：推論延遲（P50 / P95）────────────────────────
+    st.markdown("#### F｜推論延遲（最近 100 次）")
+    df_runs = pd.DataFrame(get_model_runs(limit=100))
+    lat = df_runs["inference_latency_ms"].dropna() if "inference_latency_ms" in df_runs.columns else pd.Series([], dtype=float)
+    if lat.empty:
+        st.info("尚無延遲記錄，送出回報後即開始累積。")
+    else:
+        lf1, lf2, lf3 = st.columns(3)
+        with lf1:
+            st.metric("P50 延遲", f"{lat.quantile(0.50):.0f} ms")
+        with lf2:
+            st.metric("P95 延遲", f"{lat.quantile(0.95):.0f} ms")
+        with lf3:
+            st.metric("最大延遲", f"{lat.max():.0f} ms")
+
+    # ── 區塊 G：Retraining 觸發狀態燈號 ─────────────────────
+    st.markdown("#### G｜Retraining 觸發評估")
+    unused_count = len([c for c in corrections if not c.get("used_for_retraining")])
+    _acc_for_rule = acc_stats if acc_stats else []
+    if len(_acc_for_rule) >= 10:
+        _df_r = pd.DataFrame(_acc_for_rule)
+        _df_r["correct"] = _df_r["predicted"] == _df_r["ground_truth"]
+        _overall_acc = _df_r["correct"].mean()
+        r2 = _overall_acc < 0.70
+    else:
+        r2 = False
+    _review_r = df_conf["need_review"].mean() if conf_stats else 0
+    r1 = unused_count >= 20
+    r3 = _review_r > 0.30
+
+    triggered = []
+    if r1: triggered.append(f"R1：未用於 Retraining 的修正數 {unused_count} 筆（閾值 ≥ 20）")
+    if r2: triggered.append(f"R2：線上準確率 {_overall_acc:.1%} 低於 70%")
+    if r3: triggered.append(f"R3：待審核率 {_review_r:.1%} 高於 30%")
+
+    if triggered:
+        st.error("🔴 **建議執行 Retraining**")
+        for msg in triggered:
+            st.markdown(f"- {msg}")
+    else:
+        st.success(
+            f"🟢 **模型狀態正常，暫不需 Retraining**　"
+            f"（未用修正 {unused_count} 筆 ｜ 待審核率 {_review_r:.1%}）"
+        )

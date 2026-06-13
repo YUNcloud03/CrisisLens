@@ -7,7 +7,10 @@ import google.generativeai as genai
 
 from utils.config import GEMINI_API_KEY
 from rag.retriever import retrieve, index_exists
-from rag.prompts import RAG_SYSTEM_PROMPT, RAG_USER_TEMPLATE, FALLBACK_ADVICE
+from rag.prompts import (
+    RAG_SYSTEM_PROMPT, RAG_USER_TEMPLATE,
+    FALLBACK_ADVICE, GENERIC_FALLBACK_ADVICE,
+)
 
 
 def _init_gemini():
@@ -93,7 +96,7 @@ def generate_advice(
             log_error("rag_generate", f"Gemini 呼叫失敗：{e}", exc_info=True)
 
     # ── 4. Fallback（無 API key 或無 index）─────────────────
-    fallback = FALLBACK_ADVICE.get(disaster_type_zh, FALLBACK_ADVICE["其他或無明顯災害"])
+    fallback = FALLBACK_ADVICE.get(disaster_type_zh, GENERIC_FALLBACK_ADVICE)
     return {
         "advice":   fallback,
         "sources":  sources if sources else ["內建應變指引"],

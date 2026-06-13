@@ -168,12 +168,12 @@ _GEO_RULES: dict[str, dict] = {
     "Landslide":              {"mountain": 100, "coastal": 50,  "other": 30},
     "Land Disaster":          {"mountain": 100, "coastal": 50,  "other": 30},
     "Typhoon or Storm Damage":{"mountain": 60,  "coastal": 95,  "other": 50},
+    "Flood":                  {"mountain": 50,  "coastal": 85,  "other": 55},
     "Water Disaster":         {"mountain": 50,  "coastal": 85,  "other": 55},
     "Earthquake Damage":      {"mountain": 75,  "coastal": 75,  "other": 70},
     "Fire":                   {"mountain": 70,  "coastal": 65,  "other": 70},
     "Fire Disaster":          {"mountain": 70,  "coastal": 65,  "other": 70},
     "Damaged Infrastructure": {"mountain": 70,  "coastal": 70,  "other": 70},
-    "Non Damage":             {"mountain": 65,  "coastal": 65,  "other": 65},
 }
 _GEO_DEFAULT = {"mountain": 65, "coastal": 65, "other": 60}
 

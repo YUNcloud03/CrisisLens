@@ -1,0 +1,42 @@
+{
+  "classes": [
+    "Earthquake Damage",
+    "Flood",
+    "Fire",
+    "Typhoon or Storm Damage",
+    "Landslide"
+  ],
+  "zh_labels": [
+    "地震或建築損壞",
+    "淹水",
+    "火災",
+    "颱風或強風災損",
+    "土石流或坍方"
+  ],
+  "class_to_idx": {
+    "Earthquake Damage": 0,
+    "Flood": 1,
+    "Fire": 2,
+    "Typhoon or Storm Damage": 3,
+    "Landslide": 4
+  },
+  "num_classes": 5,
+  "dataset": "QCRI/MEDIC disaster_types（5 類，排除 not/other）",
+  "version": "v2",
+  "v2_config": {
+    "img_size": 256,
+    "dedup": "dhash",
+    "train_dedup_removed": 3616,
+    "test_leak_excluded": 60,
+    "rrc_scale": [
+      0.5,
+      1.0
+    ],
+    "color_jitter": [
+      0.15,
+      0.15,
+      0.1
+    ],
+    "model_selection": "val_macro_f1"
+  }
+}
