@@ -35,11 +35,12 @@ def _slice_head_to_current_classes(weight, bias, saved_classes_en, target_classe
     (sliced_weight, sliced_bias) 對齊 target_classes_en 順序；
     若 target 任一類別不存在於 saved，回 None。
     """
+    saved_index = {cls: i for i, cls in enumerate(saved_classes_en)}
     idx = []
     for cls in target_classes_en:
-        if cls not in saved_classes_en:
+        if cls not in saved_index:
             return None
-        idx.append(saved_classes_en.index(cls))
+        idx.append(saved_index[cls])
     return weight[idx], bias[idx]
 
 
