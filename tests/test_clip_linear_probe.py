@@ -56,3 +56,19 @@ def test_slice_returns_none_when_target_class_missing():
     bias = torch.arange(3, dtype=torch.float32)
 
     assert _slice_head_to_current_classes(weight, bias, saved, TARGET_5) is None
+
+
+from models.clip_classifier import _load_linear_head
+
+
+def test_load_linear_head_outputs_five_classes():
+    loaded = _load_linear_head()
+    assert loaded is not None, "clip_linear_head.pth 應已由 Task 1 取回"
+    head, temperature = loaded
+    # 切片後輸出維度應為現在的 5 類
+    assert head.out_features == 5
+    assert head.in_features == 768
+    assert isinstance(temperature, float)
+    # 隨機 768 維特徵應產生 5 個 logit
+    out = head(torch.randn(1, 768))
+    assert out.shape == (1, 5)

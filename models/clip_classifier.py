@@ -44,6 +44,41 @@ def _slice_head_to_current_classes(weight, bias, saved_classes_en, target_classe
     return weight[idx], bias[idx]
 
 
+@functools.lru_cache(maxsize=1)
+def _load_linear_head():
+    """
+    載入 clip_linear_head.pth，並把舊類別切片成現在的 CLASSES_EN。
+    回傳 (head: nn.Linear, temperature: float) 或 None（檔案缺失 / 維度不符 / 類別對不上）。
+    """
+    if not os.path.exists(_LINEAR_HEAD_PATH):
+        return None
+    import torch.nn as nn
+    try:
+        ckpt = torch.load(_LINEAR_HEAD_PATH, map_location="cpu")
+        sd = ckpt["state_dict"]
+        weight, bias = sd["weight"], sd["bias"]            # (N_saved, in_dim), (N_saved,)
+        if weight.shape[1] != ckpt.get("in_dim", weight.shape[1]):
+            return None
+        sliced = _slice_head_to_current_classes(weight, bias, ckpt["classes_en"], CLASSES_EN)
+        if sliced is None:
+            return None
+        sliced_w, sliced_b = sliced
+        head = nn.Linear(sliced_w.shape[1], sliced_w.shape[0])
+        with torch.no_grad():
+            head.weight.copy_(sliced_w)
+            head.bias.copy_(sliced_b)
+        head.eval()
+        temperature = float(ckpt.get("temperature", 1.0))
+        return head, temperature
+    except Exception:
+        return None
+
+
+def linear_probe_available() -> bool:
+    """UI 用：linear probe 權重是否可成功載入並切片。"""
+    return _load_linear_head() is not None
+
+
 def _load_active_multi_prompts() -> tuple[dict, str]:
     """
     載入 Gemini 生成的 prompt（若存在），否則使用內建 MULTI_PROMPT_SETS。
