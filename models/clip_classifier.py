@@ -49,12 +49,15 @@ def _load_linear_head():
     """
     載入 clip_linear_head.pth，並把舊類別切片成現在的 CLASSES_EN。
     回傳 (head: nn.Linear, temperature: float) 或 None（檔案缺失 / 維度不符 / 類別對不上）。
+
+    註：本函式以 lru_cache 快取結果，包含 None。一旦回傳 None（例如啟動時權重
+    尚未就位），同一行程內不會重試，需重啟才會重新嘗試載入。
     """
     if not os.path.exists(_LINEAR_HEAD_PATH):
         return None
     import torch.nn as nn
     try:
-        ckpt = torch.load(_LINEAR_HEAD_PATH, map_location="cpu")
+        ckpt = torch.load(_LINEAR_HEAD_PATH, map_location="cpu", weights_only=True)
         sd = ckpt["state_dict"]
         weight, bias = sd["weight"], sd["bias"]            # (N_saved, in_dim), (N_saved,)
         if weight.shape[1] != ckpt.get("in_dim", weight.shape[1]):
@@ -70,7 +73,10 @@ def _load_linear_head():
         head.eval()
         temperature = float(ckpt.get("temperature", 1.0))
         return head, temperature
-    except Exception:
+    except Exception as e:
+        logging.getLogger(__name__).warning(
+            "linear probe 載入失敗，將退回 zero-shot：%s", e
+        )
         return None
 
 

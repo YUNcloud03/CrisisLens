@@ -69,6 +69,7 @@ def test_load_linear_head_outputs_five_classes():
     assert head.out_features == 5
     assert head.in_features == 768
     assert isinstance(temperature, float)
+    assert temperature > 0
     # 隨機 768 維特徵應產生 5 個 logit
     out = head(torch.randn(1, 768))
     assert out.shape == (1, 5)
