@@ -245,6 +245,8 @@ with st.sidebar:
         help="「雙主投票」同時執行 CLIP 與 EfficientNet-B0：一致→高信心；不一致→need_review 並取信心較高者。"
              "CLIP 預設走 linear-probe，權重未就緒時自動退回 zero-shot。",
     )
+    # 注意：選項標籤以子字串編碼行為（同 _USE_CLIP/_USE_EFFNET）。
+    # 兩個 probe 選項的標籤都必須含 "linear-probe"，否則改這裡的判斷。
     _prefer_probe = "linear-probe" in model_mode
 
     prompt_set_key = list(PROMPT_SETS.keys())[1]  # B 預設（單 prompt 比較用）
