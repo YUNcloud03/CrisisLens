@@ -111,3 +111,105 @@ flowchart TB
 | Legacy（已淘汰） | DisasterCNN_v1（0.7012）、ResNet50 baseline | `custom-cnn-medic-5class-v2` |
 
 ---
+
+## 2. Data Card
+
+> 本章採課程 Data Card 8 段模板。CrisisLens 涉及兩類資料：**訓練資料（QCRI/MEDIC，固定學術資料集）**與**生產資料（民眾即時回報）**。兩者風險屬性不同，分別說明。
+
+### 2.1 Dataset identity（資料集識別）
+
+| 欄位 | 訓練資料 | 生產資料 |
+|---|---|---|
+| 名稱 | QCRI/MEDIC（disaster_types split），CrisisLens 5 類 v2 改作 | CrisisLens 民眾災情回報 |
+| 擁有者 / 來源 | Qatar Computing Research Institute (QCRI) | CrisisLens 平台使用者 |
+| 版本 | 5 類 v2（`models/classes_5class_v2.json`） | 持續累積 |
+| 業務目的 | 訓練 5 類災害影像分類器 | 真實災情情報彙整、事件聚合 |
+
+### 2.2 Provenance & licensing（出處與授權）
+
+- **來源**：QCRI/MEDIC，社群媒體影像（Twitter、Flickr）於真實災害事件期間蒐集，群眾標註 + 專家驗證。
+- **論文**：Alam et al., *MEDIC: A Multi-Task Learning Dataset for Disaster Image Classification*, ACL 2021 Workshop。
+- **下載**：https://crisisnlp.qcit.edu.qa/medic/index.html
+- **授權**：Research / Academic 非商業使用 → CrisisLens 屬學術專案，符合授權範圍；**不得商業化部署**為已知限制。
+- **領域改作**：MEDIC 原 `hurricane` 改映射為「颱風或強風災損 Typhoon or Storm Damage」以符合台灣用語；訓練影像以大西洋颶風為主，對台灣颱風存在 **distribution shift**（見 §2.6、§5）。
+
+### 2.3 Schema & labels（結構與標籤）
+
+**5 類標籤（`models/classes_5class_v2.json`、`utils/config.py`；已於 v2 移除舊第 6 類「Other or No Disaster」）：**
+
+| idx | English | 中文 |
+|---|---|---|
+| 0 | Earthquake Damage | 地震或建築損壞 |
+| 1 | Flood | 淹水 |
+| 2 | Fire | 火災 |
+| 3 | Typhoon or Storm Damage | 颱風或強風災損 |
+| 4 | Landslide | 土石流或坍方 |
+
+**生產資料每筆回報主要欄位（`db/schema.sql`）**：`image_path`、`latitude/longitude`、`city/district`、`disaster_type`、`clip_confidence`、`need_review`、`model_agreement`、`rag_advice` 等。
+
+### 2.4 Protected attributes（受保護屬性）
+
+- CrisisLens 的資料**不含人口統計受保護屬性**（性別、年齡、種族等），故不適用 SPD/DI 這類人口公平性指標。
+- 改以**任務相關的 slice 維度**做公平性檢視：**災害類別**、**地理區域**、**時段**（詳見 §5 可信度測試）。對應課程「不應盲目移除受保護屬性、需用於測試與監控」的精神，這裡保留 class/region/time 作為持續監控維度。
+
+### 2.5 Privacy controls（隱私控制）
+
+| 風險 | 控制 |
+|---|---|
+| 影像 EXIF 內含 GPS/裝置資訊 | `strip_exif()`（`utils/image_utils.py`）在任何儲存/推論前以逐像素重建影像，移除所有 EXIF；`load_image()` 每次上傳必呼叫 |
+| 回報精確座標暴露使用者位置 | 事件聚合以 **H3 resolution 9（邊長約 174m）**模糊化；座標不對外公開 |
+| 影像可能含可識別人物 | 不做人臉辨識，僅用於災害分類；admin-only 存取 |
+| 描述文字可能含 PII（身分證/手機/精確地址） | ShieldGemma 輸入檢查標記 review（見 §6） |
+| 資料保留 | 目前無自動刪除政策 → 列為未來工作（§9） |
+
+### 2.6 Quality & bias（品質與偏誤）
+
+**訓練集類別分布（`docs/eda_5class_phase1_analysis.md`）：**
+
+| 類別 | Train 張數 | 占比 |
+|---|---|---|
+| Earthquake Damage | 12,296 | 53.3% |
+| Typhoon or Storm Damage（原 Hurricane） | 4,517 | 19.6% |
+| Flood | 3,401 | 14.7% |
+| Fire | 1,796 | 7.8% |
+| Landslide | 1,065 | 4.6% |
+| **Train 合計** | **23,075** | 100% |
+
+- **類別不平衡**：最多/最少 = **11.55x**（Earthquake vs Landslide）→ 訓練以 `val_macro_f1` 選模、輔以資料增強緩解。
+- **已知偏誤**：地理偏誤（西半球事件為主，台灣場景準確率下降）、平台偏誤（社群照片）、時間偏誤（2012–2020）、**Hurricane≠Typhoon**（視覺型態差異 → 颱風類 recall 最弱 0.783，見 §3）、Earthquake 主導訓練集。
+
+### 2.7 Splits & lineage（切分與血緣）
+
+| Split | 張數 | 用途 |
+|---|---|---|
+| Train | 23,075 | 訓練 |
+| Validation | 2,672 | 選模（macro-F1 最佳 epoch） |
+| Test | 5,649 | held-out 最終評估（EfficientNet test macro-F1 **0.8375**） |
+
+**清理 pipeline（`models/classes_5class_v2.json`）**：
+
+```mermaid
+flowchart LR
+  RAW["MEDIC disaster_types"] --> MAP["6→5 類<br/>移除 Other/No Disaster"]
+  MAP --> DEDUP["dHash 去重<br/>移除 3,616 張 (15.7%)"]
+  DEDUP --> LEAK["測試集洩漏排除<br/>60 張 (1.06%)"]
+  LEAK --> PRE["前處理<br/>Resize(288)→CenterCrop(256)<br/>ImageNet normalize"]
+  PRE --> SPLIT["train/val/test"]
+```
+
+- 增強：RandomResizedCrop scale=[0.5,1.0]、ColorJitter=[0.15,0.15,0.1]；img_size 256；選模指標 `val_macro_f1`。
+
+### 2.8 Security controls（資料面安全控制）
+
+| 控制 | 說明 |
+|---|---|
+| 來源驗證 | 訓練資料為固定、版本控管的學術資料集（MEDIC），非動態可寫入儲存，降低 training-time data poisoning 風險 |
+| 不受信任輸入 | 生產資料（民眾上傳）視為**不受信任輸入**，先經 ShieldGemma 影像/輸入安全檢查（§6）才進入推論 |
+| 訓練/生產隔離 | 目前**生產回報資料不直接用於再訓練**；若未來啟用 user-data 再訓練，需加入 poisoning 檢查與審核（§9） |
+| 存取控制 | 影像 admin-only；密碼 PBKDF2-SHA256（120,000 iters）+ salt（`utils/auth.py`） |
+| 儲存 | Azure Blob 或本機 `uploads/reports/`，JPEG q85（`utils/storage.py`） |
+| 限速 | 每使用者每小時最多 10 筆回報（`app.py`，`_RATE_LIMIT = 10`），抑制自動化灌入 |
+
+> **資料卡小結**：訓練資料偏誤（地理/類別不平衡/Hurricane≠Typhoon）是主要品質風險，已以選模指標與增強部分緩解；生產資料的主要風險是隱私（GPS/PII）與不受信任輸入，已以 `strip_exif` + H3 模糊化 + ShieldGemma + 限速控制。
+
+---
