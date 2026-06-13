@@ -236,9 +236,16 @@ with st.sidebar:
     st.markdown("### ⚙️ 模型設定")
     model_mode = st.selectbox(
         "使用模型",
-        ["雙主投票 (CLIP + EfficientNet-B0)", "CLIP ViT-L/14", "EfficientNet-B0"],
-        help="「雙主投票」同時執行 CLIP 與 EfficientNet-B0：一致→高信心；不一致→need_review 並取信心較高者",
+        [
+            "雙主投票 (CLIP linear-probe + EfficientNet-B0)",
+            "CLIP linear-probe",
+            "CLIP ViT-L/14 (zero-shot)",
+            "EfficientNet-B0",
+        ],
+        help="「雙主投票」同時執行 CLIP 與 EfficientNet-B0：一致→高信心；不一致→need_review 並取信心較高者。"
+             "CLIP 預設走 linear-probe，權重未就緒時自動退回 zero-shot。",
     )
+    _prefer_probe = "linear-probe" in model_mode
 
     prompt_set_key = list(PROMPT_SETS.keys())[1]  # B 預設（單 prompt 比較用）
 
@@ -530,10 +537,10 @@ if analyze_btn:
     import time as _time
     _infer_t0 = _time.perf_counter()
     with st.spinner("模型推論中..."):
-        # ── CLIP ViT-L/14（零樣本，多 prompt 平均）──────────
+        # ── CLIP ViT-L/14（linear-probe 優先，否則 zero-shot 多 prompt 平均）──
         if _USE_CLIP:
-            from models.clip_classifier import classify_multi_prompt as clip_classify
-            clip_result = clip_classify(img)
+            from models.clip_classifier import classify_clip
+            clip_result = classify_clip(img, prefer_probe=_prefer_probe)
 
         # ── EfficientNet-B0（v2 微調，5 類，雙主投票第二主）──
         if _USE_EFFNET:
@@ -549,6 +556,15 @@ if analyze_btn:
                           username=user.get("username"))
                 st.warning("⚠️ EfficientNet-B0 載入失敗，本次僅以 CLIP 結果為準。")
     _inference_ms = round((_time.perf_counter() - _infer_t0) * 1000, 1)
+
+    if clip_result is not None and _USE_CLIP:
+        _m = clip_result.get("method", "zero_shot")
+        if _prefer_probe and _m == "zero_shot":
+            st.caption("ℹ️ linear probe 權重未就緒，已退回 zero-shot CLIP")
+        else:
+            _label = {"linear_probe": "CLIP：linear-probe（MEDIC 6→5）",
+                      "zero_shot": "CLIP：zero-shot 多 prompt"}.get(_m, _m)
+            st.caption(f"🔎 {_label}")
 
     if clip_result is None and effnet_result is None:
         st.error("模型推論失敗，請稍後再試。")
