@@ -46,19 +46,24 @@
 
 ## 系統架構
 
-```
-上傳影像 ──► strip_exif（移除 GPS）──► ShieldGemma 影像/輸入安全
-                                          │
-                                          ▼
-                    雙主投票：CLIP linear-probe  +  EfficientNet-B0
-                                          │
-                          need_review？（信心 / gap / 一致性）
-                            ├─ 是 ─► admin 人工審核
-                            └─ 否 ─► RAG 應變建議（Gemini 2.5 Flash + FAISS）
-                                          │
-                                  ShieldGemma 輸出安全（sanitize）
-                                          │
-                            寫入 DB + 事件聚合（H3 模糊化 / Priority）──► MLOps 監控
+```mermaid
+flowchart TB
+  U["民眾上傳<br/>影像 + 描述 + 位置"] --> EXIF["strip_exif<br/>移除 EXIF/GPS"]
+  EXIF --> IMG["ShieldGemma<br/>影像安全"]
+  U --> IN["ShieldGemma<br/>輸入安全"]
+  IMG --> VOTE
+  IN --> RAG
+  subgraph VOTE["雙主投票分類（5 類）"]
+    CLIP["CLIP ViT-L/14<br/>linear-probe（zero-shot 退路）"]
+    EFF["EfficientNet-B0<br/>MEDIC 微調"]
+  end
+  VOTE --> NR{"need_review?<br/>信心<0.5 / gap<0.15 / 不一致"}
+  NR -- 是 --> ADMIN["admin 人工審核"]
+  NR -- 否 --> RAG["RAG 應變建議<br/>Gemini 2.5 Flash + FAISS"]
+  RAG --> OUT["ShieldGemma<br/>輸出安全 / sanitize"]
+  OUT --> DB["寫入 DB + 事件聚合<br/>H3 模糊化 / Priority"]
+  ADMIN --> DB
+  DB --> MON["MLOps 監控<br/>延遲 / drift / 修正率"]
 ```
 
 > 完整的資料卡、模型卡、威脅模型與合規對應，見 [docs/MLSecOps_Final_Report.md](docs/MLSecOps_Final_Report.md)。
